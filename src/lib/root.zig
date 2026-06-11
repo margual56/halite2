@@ -15,7 +15,7 @@ pub const TURN_PROCESS_TIME = 2;
 /// Angle: [0, 360)
 /// Magnitude: [0, 7]
 pub const lut_thrusts = blk: {
-    @setEvalBranchQuota(360 * 8);
+    @setEvalBranchQuota(4000);
     var table: [360][8]@Vector(2, f64) = undefined;
     for (0..360) |angle| {
         for (0..8) |magnitude| {
@@ -106,8 +106,8 @@ pub const Map = struct {
     fn get_player_initial_position(self: *Self, i: u32) @Vector(2, f32) {
         var random = self.prng.random();
         var candidate = @Vector(2, f32){
-            @as(f32, @floatFromInt(self.size[0])) * @cos((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + random.float(f32)) - @as(f32, @floatFromInt(self.size[0])),
-            @as(f32, @floatFromInt(self.size[1])) * @sin((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + random.float(f32)) - @as(f32, @floatFromInt(self.size[1])),
+            @as(f32, @floatFromInt(self.size[0])) * 0.5 + (@as(f32, @floatFromInt(self.size[0])) * 0.4) * @cos((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + random.float(f32)),
+            @as(f32, @floatFromInt(self.size[1])) * 0.5 + (@as(f32, @floatFromInt(self.size[1])) * 0.4) * @sin((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + random.float(f32)),
         };
 
         while (!is_valid_spawn_point(candidate, self.planets)) {
@@ -143,6 +143,37 @@ pub const Map = struct {
         try player.ships.put(ship3_id, try Ship.new(ship3_id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[240][1]));
     }
 
+    pub const SpatialMap = std.AutoHashMap(u64, std.ArrayList(*Ship));
+
+    pub fn get_spatial_map(self: *Self) !SpatialMap {
+        var spatial_map = SpatialMap.init(self.allocator);
+        errdefer {
+            var it = spatial_map.valueIterator();
+            while (it.next()) |list| list.deinit(self.allocator);
+            spatial_map.deinit();
+        }
+
+        const cells_x = (self.size[0] + 4) / 5;
+
+        for (self.players) |*player| {
+            var ship_it = player.ships.valueIterator();
+            while (ship_it.next()) |ship| {
+                const x = @max(0.0, ship.position[0]);
+                const y = @max(0.0, ship.position[1]);
+                const cell_x = @as(u64, @intFromFloat(@floor(x / 5.0)));
+                const cell_y = @as(u64, @intFromFloat(@floor(y / 5.0)));
+                const key = cell_y * cells_x + cell_x;
+
+                const gop = try spatial_map.getOrPut(key);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = std.ArrayList(*Ship).empty;
+                }
+                try gop.value_ptr.append(self.allocator, ship);
+            }
+        }
+        return spatial_map;
+    }
+
     pub fn deinit(self: *Self) void {
         self.planets.deinit();
         for (self.players) |*player| {
@@ -163,6 +194,87 @@ pub const Player = struct {
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         _ = allocator;
         self.ships.deinit();
+    }
+
+    pub fn validate_and_gather_commands(self: *Self, raw_commands: std.AutoHashMap(Id, ShipCommand), planets: PlanetList, allocator: std.mem.Allocator) !std.AutoHashMap(Id, ShipCommand) {
+        var validated = std.AutoHashMap(Id, ShipCommand).init(allocator);
+        errdefer validated.deinit();
+
+        var it = raw_commands.iterator();
+        while (it.next()) |entry| {
+            const ship_id = entry.key_ptr.*;
+            const command = entry.value_ptr.*;
+
+            if (self.ships.get(ship_id)) |ship| {
+                ship.validate_command(command, planets) catch continue;
+                try validated.put(ship_id, command);
+            }
+        }
+        return validated;
+    }
+
+    pub fn process_moves(self: *Self, commands: std.AutoHashMap(Id, ShipCommand), map_size: @Vector(2, u64)) void {
+        var it = self.ships.iterator();
+        while (it.next()) |entry| {
+            const ship = entry.value_ptr;
+            if (commands.get(ship.id)) |command| {
+                ship.move(command, map_size) catch {};
+            }
+        }
+    }
+
+    pub fn process_combat(self: *Self, spatial_map: Map.SpatialMap) void {
+        // Simple combat logic: ships damage enemies within a certain radius
+        // This is a placeholder for a more complex implementation
+        var it = self.ships.valueIterator();
+        while (it.next()) |ship| {
+            if (ship.health == 0) continue;
+            _ = spatial_map; // TODO: Implement spatial-aware combat
+        }
+    }
+
+    pub fn process_docking(self: *Self, planets: PlanetList) void {
+        var it = self.ships.valueIterator();
+        while (it.next()) |ship| {
+            switch (ship.state) {
+                .DOCKING => |*d| {
+                    if (d.turns > 1) {
+                        d.turns -= 1;
+                    } else {
+                        ship.state = .{ .DOCKED = d.id };
+                    }
+                },
+                .UNDOCKING => |*u| {
+                    if (u.turns > 1) {
+                        u.turns -= 1;
+                    } else {
+                        ship.state = .UNDOCKED;
+                    }
+                },
+                else => {},
+            }
+
+            // Apply new state from validated commands
+            if (ship.new_state != ship.state) {
+                switch (ship.new_state) {
+                    .DOCKING => |d| {
+                        if (planets.contains(d.id)) {
+                            ship.state = ship.new_state;
+                        }
+                    },
+                    .UNDOCKING => {
+                        ship.state = ship.new_state;
+                    },
+                    else => {},
+                }
+                ship.new_state = ship.state;
+            }
+        }
+    }
+
+    pub fn process_mining_and_spawning(self: *Self) void {
+        _ = self;
+        // TODO: Implement mining from planets and ship spawning
     }
 };
 
@@ -328,4 +440,29 @@ test "Map init and add_player" {
     try std.testing.expectEqual(@as(usize, 4), map.players.len);
     try std.testing.expect(map.players[0].id != 0);
     try std.testing.expect(map.players[1].id != 0);
+}
+
+test "get_spatial_map" {
+    const allocator = std.testing.allocator;
+    var map = try Map.init(1, 100, 100, 0, allocator);
+    defer map.deinit();
+
+    try map.add_player("Player 1");
+
+    var spatial_map = try map.get_spatial_map();
+    defer {
+        var it = spatial_map.valueIterator();
+        while (it.next()) |list| list.deinit(allocator);
+        spatial_map.deinit();
+    }
+
+    try std.testing.expect(spatial_map.count() > 0);
+
+    // Check that ships are actually in the map
+    var total_ships: usize = 0;
+    var it = spatial_map.valueIterator();
+    while (it.next()) |list| {
+        total_ships += list.items.len;
+    }
+    try std.testing.expectEqual(@as(usize, 3), total_ships);
 }
