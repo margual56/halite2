@@ -3,6 +3,7 @@ pub const MAX_VELOCITY = 7.0;
 pub const TURNS_TO_DOCK = 5;
 pub const DOCK_RADIUS = 4.0;
 pub const SHIP_RADIUS = 0.5;
+pub const SHIP_DAMAGE = 64;
 
 /// Maximum time for the players to respond to
 /// the Initialization Handshake (in seconds)
@@ -27,16 +28,24 @@ pub const lut_thrusts = blk: {
     break :blk table;
 };
 
+pub fn distSq(a: anytype, b: anytype) @typeInfo(@TypeOf(a)).vector.child {
+    const diff = a - b;
+    return @reduce(.Add, diff * diff);
+}
+
+pub fn dist(a: anytype, b: anytype) @typeInfo(@TypeOf(a)).vector.child {
+    return @sqrt(distSq(a, b));
+}
+
 pub const PlanetList = std.AutoHashMap(Id, Planet);
-pub const ShipList = std.AutoHashMap(Id, Ship);
+pub const ShipList = std.ArrayList(Ship);
 
 fn is_valid_spawn_point(position: @Vector(2, f32), planets: PlanetList) bool {
     var it = planets.valueIterator();
     while (it.next()) |planet| {
-        const diff = @as(@Vector(2, f64), @floatCast(position)) - planet.position;
-        const dist_sq = @reduce(.Add, diff * diff);
+        const d2 = distSq(@as(@Vector(2, f64), @floatCast(position)), planet.position);
         const min_dist = planet.size + SHIP_RADIUS * 2;
-        if (dist_sq < min_dist * min_dist) {
+        if (d2 < min_dist * min_dist) {
             return false;
         }
     }
@@ -45,10 +54,9 @@ fn is_valid_spawn_point(position: @Vector(2, f32), planets: PlanetList) bool {
 
 fn is_valid_planet_position(position: @Vector(2, f32), size: f64, other_planets: []Planet) bool {
     for (other_planets) |planet| {
-        const diff = @as(@Vector(2, f64), @floatCast(position)) - planet.position;
-        const dist_sq = @reduce(.Add, diff * diff);
+        const d2 = distSq(@as(@Vector(2, f64), @floatCast(position)), planet.position);
         const min_dist = planet.size + size + SHIP_RADIUS;
-        if (dist_sq < min_dist * min_dist) {
+        if (d2 < min_dist * min_dist) {
             return false;
         }
     }
@@ -87,7 +95,7 @@ pub const Map = struct {
         for (players) |*player| {
             player.* = .{
                 .id = 0,
-                .ships = ShipList.init(allocator),
+                .ships = ShipList.empty,
                 .resources = 0,
                 .name = std.mem.zeroes([16]u8),
             };
@@ -135,12 +143,9 @@ pub const Map = struct {
         player.id = id;
         player.name = name;
 
-        const ship1_id = self.uuid_generator.next();
-        try player.ships.put(ship1_id, try Ship.new(ship1_id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[0][1]));
-        const ship2_id = self.uuid_generator.next();
-        try player.ships.put(ship2_id, try Ship.new(ship2_id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[120][1]));
-        const ship3_id = self.uuid_generator.next();
-        try player.ships.put(ship3_id, try Ship.new(ship3_id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[240][1]));
+        try player.ships.append(self.allocator, try Ship.new(self.uuid_generator.next(), id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[0][1]));
+        try player.ships.append(self.allocator, try Ship.new(self.uuid_generator.next(), id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[120][1]));
+        try player.ships.append(self.allocator, try Ship.new(self.uuid_generator.next(), id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[240][1]));
     }
 
     pub const SpatialMap = std.AutoHashMap(u64, std.ArrayList(*Ship));
@@ -156,13 +161,9 @@ pub const Map = struct {
         const cells_x = (self.size[0] + 4) / 5;
 
         for (self.players) |*player| {
-            var ship_it = player.ships.valueIterator();
-            while (ship_it.next()) |ship| {
-                const x = @max(0.0, ship.position[0]);
-                const y = @max(0.0, ship.position[1]);
-                const cell_x = @as(u64, @intFromFloat(@floor(x / 5.0)));
-                const cell_y = @as(u64, @intFromFloat(@floor(y / 5.0)));
-                const key = cell_y * cells_x + cell_x;
+            for (player.ships.items) |*ship| {
+                const cell_vec = @as(@Vector(2, u64), @intFromFloat(@floor(@max(@Vector(2, f64){ 0, 0 }, ship.position) / @Vector(2, f64){ 5, 5 })));
+                const key = cell_vec[1] * cells_x + cell_vec[0];
 
                 const gop = try spatial_map.getOrPut(key);
                 if (!gop.found_existing) {
@@ -192,50 +193,88 @@ pub const Player = struct {
     const Self = @This();
 
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        self.ships.deinit();
+        self.ships.deinit(allocator);
     }
 
     pub fn validate_and_gather_commands(self: *Self, raw_commands: std.AutoHashMap(Id, ShipCommand), planets: PlanetList, allocator: std.mem.Allocator) !std.AutoHashMap(Id, ShipCommand) {
         var validated = std.AutoHashMap(Id, ShipCommand).init(allocator);
         errdefer validated.deinit();
 
-        var it = raw_commands.iterator();
-        while (it.next()) |entry| {
-            const ship_id = entry.key_ptr.*;
-            const command = entry.value_ptr.*;
-
-            if (self.ships.get(ship_id)) |ship| {
+        for (self.ships.items) |*ship| {
+            if (raw_commands.get(ship.id)) |command| {
                 ship.validate_command(command, planets) catch continue;
-                try validated.put(ship_id, command);
+
+                switch (command) {
+                    .DOCK => |planet_id| {
+                        ship.new_state = .{ .DOCKING = .{ .id = planet_id, .turns = TURNS_TO_DOCK } };
+                    },
+                    .UNDOCK => {
+                        switch (ship.state) {
+                            .DOCKED => |planet_id| {
+                                ship.new_state = .{ .UNDOCKING = .{ .id = planet_id, .turns = TURNS_TO_DOCK } };
+                            },
+                            else => {},
+                        }
+                    },
+                    else => {},
+                }
+
+                try validated.put(ship.id, command);
             }
         }
         return validated;
     }
 
     pub fn process_moves(self: *Self, commands: std.AutoHashMap(Id, ShipCommand), map_size: @Vector(2, u64)) void {
-        var it = self.ships.iterator();
-        while (it.next()) |entry| {
-            const ship = entry.value_ptr;
+        for (self.ships.items) |*ship| {
             if (commands.get(ship.id)) |command| {
                 ship.move(command, map_size) catch {};
             }
         }
     }
 
-    pub fn process_combat(self: *Self, spatial_map: Map.SpatialMap) void {
-        // Simple combat logic: ships damage enemies within a certain radius
-        // This is a placeholder for a more complex implementation
-        var it = self.ships.valueIterator();
-        while (it.next()) |ship| {
+    pub fn process_combat(self: *Self, spatial_map: Map.SpatialMap, map_size: @Vector(2, u64)) void {
+        const cells_x = (map_size[0] + 4) / 5;
+        for (self.ships.items) |*ship| {
             if (ship.health == 0) continue;
-            _ = spatial_map; // TODO: Implement spatial-aware combat
+
+            const cell_vec = @as(@Vector(2, u64), @intFromFloat(@floor(@max(@Vector(2, f64){ 0, 0 }, ship.position) / @Vector(2, f64){ 5, 5 })));
+            const key = cell_vec[1] * cells_x + cell_vec[0];
+
+            if (spatial_map.get(key)) |list| {
+                for (list.items) |other_ship| {
+                    if (other_ship.id == ship.id) continue;
+                    if (other_ship.health == 0) continue;
+
+                    const d2 = distSq(ship.position, other_ship.position);
+
+                    if (d2 < (SHIP_RADIUS * 2) * (SHIP_RADIUS * 2)) {
+                        ship.health = 0;
+                        other_ship.health = 0;
+                        break;
+                    }
+
+                    // Only damage ships from other players
+                    if (other_ship.owner_id != self.id) {
+                        other_ship.health = std.math.sub(u8, other_ship.health, SHIP_DAMAGE) catch 0;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn cleanup_dead_ships(self: *Self) void {
+        var i: usize = self.ships.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.ships.items[i].health == 0) {
+                _ = self.ships.swapRemove(i);
+            }
         }
     }
 
     pub fn process_docking(self: *Self, planets: PlanetList) void {
-        var it = self.ships.valueIterator();
-        while (it.next()) |ship| {
+        for (self.ships.items) |*ship| {
             switch (ship.state) {
                 .DOCKING => |*d| {
                     if (d.turns > 1) {
@@ -255,20 +294,22 @@ pub const Player = struct {
             }
 
             // Apply new state from validated commands
-            if (ship.new_state != ship.state) {
-                switch (ship.new_state) {
-                    .DOCKING => |d| {
+            switch (ship.new_state) {
+                .DOCKING => |d| {
+                    if (ship.state != .DOCKING) {
                         if (planets.contains(d.id)) {
                             ship.state = ship.new_state;
                         }
-                    },
-                    .UNDOCKING => {
+                    }
+                },
+                .UNDOCKING => {
+                    if (ship.state != .UNDOCKING) {
                         ship.state = ship.new_state;
-                    },
-                    else => {},
-                }
-                ship.new_state = ship.state;
+                    }
+                },
+                else => {},
             }
+            ship.new_state = ship.state;
         }
     }
 
@@ -354,6 +395,7 @@ pub const ShipCommand = union(enum) {
 
 pub const Ship = struct {
     id: Id,
+    owner_id: Id,
     health: u8,
     position: @Vector(2, f64),
     state: ShipState,
@@ -362,9 +404,10 @@ pub const Ship = struct {
 
     const Self = @This();
 
-    pub fn new(id: Id, position: @Vector(2, f64)) !Self {
+    pub fn new(id: Id, owner_id: Id, position: @Vector(2, f64)) !Self {
         return .{
             .id = id,
+            .owner_id = owner_id,
             .health = 255,
             .position = position,
             .state = .UNDOCKED,
@@ -387,10 +430,9 @@ pub const Ship = struct {
                 switch (self.state) {
                     .UNDOCKED => {
                         if (planets.get(planet1)) |planet| {
-                            const diff = self.position - planet.position;
-                            const distance = @sqrt(@reduce(.Add, diff * diff));
+                            const d = dist(self.position, planet.position);
 
-                            if (distance > planet.size + DOCK_RADIUS + SHIP_RADIUS) {
+                            if (d > planet.size + DOCK_RADIUS + SHIP_RADIUS) {
                                 return error.InvalidCommand;
                             }
                         } else {
