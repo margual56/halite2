@@ -15,10 +15,13 @@ pub const TURN_PROCESS_TIME = 2;
 /// Angle: [0, 360)
 /// Magnitude: [0, 7]
 pub const lut_thrusts = blk: {
-    var table: [360][8]f64 = undefined;
+    @setEvalBranchQuota(360 * 8);
+    var table: [360][8]@Vector(2, f64) = undefined;
     for (0..360) |angle| {
         for (0..8) |magnitude| {
-            table[angle][magnitude] = magnitude * @Vector(2, f64){ @cos(angle), @sin(angle) };
+            const a = @as(f64, @floatFromInt(angle)) * (std.math.pi / 180.0);
+            const m = @as(f64, @floatFromInt(magnitude));
+            table[angle][magnitude] = @Vector(2, f64){ m * @cos(a), m * @sin(a) };
         }
     }
     break :blk table;
@@ -28,17 +31,24 @@ pub const PlanetList = std.AutoHashMap(Id, Planet);
 pub const ShipList = std.AutoHashMap(Id, Ship);
 
 fn is_valid_spawn_point(position: @Vector(2, f32), planets: PlanetList) bool {
-    for (planets.values()) |planet| {
-        if (position - planet.position < planet.radius + SHIP_RADIUS * 2) {
+    var it = planets.valueIterator();
+    while (it.next()) |planet| {
+        const diff = @as(@Vector(2, f64), @floatCast(position)) - planet.position;
+        const dist_sq = @reduce(.Add, diff * diff);
+        const min_dist = planet.size + SHIP_RADIUS * 2;
+        if (dist_sq < min_dist * min_dist) {
             return false;
         }
     }
     return true;
 }
 
-fn is_valid_planet_position(position: @Vector(2, f32), size: f64, planets: []Planet) bool {
-    for (planets) |planet| {
-        if (position - planet.position < planet.radius + size + SHIP_RADIUS) {
+fn is_valid_planet_position(position: @Vector(2, f32), size: f64, other_planets: []Planet) bool {
+    for (other_planets) |planet| {
+        const diff = @as(@Vector(2, f64), @floatCast(position)) - planet.position;
+        const dist_sq = @reduce(.Add, diff * diff);
+        const min_dist = planet.size + size + SHIP_RADIUS;
+        if (dist_sq < min_dist * min_dist) {
             return false;
         }
     }
@@ -51,45 +61,58 @@ pub const Map = struct {
     players: []Player,
     uuid_generator: IdLib.UUIDGenerator,
     allocator: std.mem.Allocator,
-    random: std.Random,
+    prng: std.Random.DefaultPrng,
 
     const Self = @This();
 
-    pub fn init(n_players: u32, size_x: u64, size_y: u64, n_planets: u16, allocator: std.mem.Allocator) Self {
-        var prng: std.Random.DefaultPrng = .init(blk: {
-            var seed: u64 = undefined;
-            try std.posix.getrandom(std.mem.asBytes(&seed));
-            break :blk seed;
-        });
-        var random = prng.random();
-        var uuid_generator = IdLib.UUIDGenerator.init(allocator);
+    pub fn init(n_players: u32, size_x: u64, size_y: u64, n_planets: u16, allocator: std.mem.Allocator) !Self {
+        const seed: u64 = 42;
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        var uuid_generator = IdLib.UUIDGenerator.init(@as(u32, @intCast(seed & 0xFFFFFFFF)));
 
         var planets = PlanetList.init(allocator);
-        for (0..n_planets) |_| {
+        const planet_list = try allocator.alloc(Planet, n_planets);
+        defer allocator.free(planet_list);
+
+        for (0..n_planets) |i| {
             const id = uuid_generator.next();
 
-            _ = planets.put(id, Planet.new(id, size_x, size_y, &planets.valueIterator().items, &random));
+            const planet = Planet.new(id, @as(u32, @intCast(size_x)), @as(u32, @intCast(size_y)), planet_list[0..i], random);
+            try planets.put(id, planet);
+            planet_list[i] = planet;
+        }
+
+        const players = try allocator.alloc(Player, n_players);
+        for (players) |*player| {
+            player.* = .{
+                .id = 0,
+                .ships = ShipList.init(allocator),
+                .resources = 0,
+                .name = std.mem.zeroes([16]u8),
+            };
         }
 
         return .{
             .size = .{ size_x, size_y },
             .planets = planets,
-            .players = std.mem.zeroes(Player, n_players),
+            .players = players,
             .uuid_generator = uuid_generator,
             .allocator = allocator,
-            .random = random,
+            .prng = prng,
         };
     }
 
-    fn get_player_initial_position(self: Self, i: u32) @Vector(2, f32) {
-        const candidate = .{
-            @as(f32, @floatFromInt(self.size[0])) * @cos((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + self.random.float(f32)) - self.size[0],
-            @as(f32, @floatFromInt(self.size[1])) * @sin((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + self.random.float(f32)) - self.size[1],
+    fn get_player_initial_position(self: *Self, i: u32) @Vector(2, f32) {
+        var random = self.prng.random();
+        var candidate = @Vector(2, f32){
+            @as(f32, @floatFromInt(self.size[0])) * @cos((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + random.float(f32)) - @as(f32, @floatFromInt(self.size[0])),
+            @as(f32, @floatFromInt(self.size[1])) * @sin((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + random.float(f32)) - @as(f32, @floatFromInt(self.size[1])),
         };
 
         while (!is_valid_spawn_point(candidate, self.planets)) {
-            candidate[0] = self.random.float(f32) * self.size[0];
-            candidate[1] = self.random.float(f32) * self.size[1];
+            candidate[0] = random.float(f32) * @as(f32, @floatFromInt(self.size[0]));
+            candidate[1] = random.float(f32) * @as(f32, @floatFromInt(self.size[1]));
         }
 
         return candidate;
@@ -98,31 +121,34 @@ pub const Map = struct {
     pub fn add_player(self: *Self, name_raw: []const u8) !void {
         const id = self.uuid_generator.next();
 
-        const name: [16]u8 = std.mem.zeroes([16]u8);
-        std.mem.copyForwards(u8, name[0..], name_raw);
-
-        var player = .{
-            .id = id,
-            .ships = ShipList.init(self.allocator),
-            .resources = 0.0,
-            .name = name,
-        };
+        var name: [16]u8 = std.mem.zeroes([16]u8);
+        const copy_len = @min(name_raw.len, 16);
+        @memcpy(name[0..copy_len], name_raw[0..copy_len]);
 
         var i: u32 = 0;
-        while (self.players[0] == 0) i += 1;
+        while (i < self.players.len and self.players[i].id != 0) : (i += 1) {}
+        if (i == self.players.len) return error.NoMorePlayers;
 
         const pos = self.get_player_initial_position(i);
 
-        player.ships.append(Ship.new(self.uuid_generator.next(), pos + lut_thrusts[0][SHIP_RADIUS]));
-        player.ships.append(Ship.new(self.uuid_generator.next(), pos + lut_thrusts[120][SHIP_RADIUS]));
-        player.ships.append(Ship.new(self.uuid_generator.next(), pos + lut_thrusts[240][SHIP_RADIUS]));
+        var player = &self.players[i];
+        player.id = id;
+        player.name = name;
 
-        self.players[i] = player;
+        const ship1_id = self.uuid_generator.next();
+        try player.ships.put(ship1_id, try Ship.new(ship1_id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[0][1]));
+        const ship2_id = self.uuid_generator.next();
+        try player.ships.put(ship2_id, try Ship.new(ship2_id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[120][1]));
+        const ship3_id = self.uuid_generator.next();
+        try player.ships.put(ship3_id, try Ship.new(ship3_id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[240][1]));
     }
 
-    pub fn deinit(self: Self) !void {
-        self.planets.deinit(self.allocator);
-        self.players[0..].deinit(self.allocator);
+    pub fn deinit(self: *Self) void {
+        self.planets.deinit();
+        for (self.players) |*player| {
+            player.deinit(self.allocator);
+        }
+        self.allocator.free(self.players);
     }
 };
 
@@ -134,8 +160,9 @@ pub const Player = struct {
 
     const Self = @This();
 
-    pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
-        self.ships.deinit(allocator);
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        _ = allocator;
+        self.ships.deinit();
     }
 };
 
@@ -148,17 +175,17 @@ pub const Planet = struct {
     const Self = @This();
 
     fn generate_planet_size(random: std.Random) f64 {
-        const r = random.float();
+        const r = random.float(f64);
 
         // 60% of planets are Small
         if (r < 0.60) {
-            return 2.0 + random.float(f32) * 0.5;
+            return 2.0 + random.float(f64) * 0.5;
             // 30% of planets are Medium
         } else if (r < 0.90) {
-            return 3.0 + random.float(f32) * 0.5;
+            return 3.0 + random.float(f64) * 0.5;
             // 10% of planets are Large (the "jackpots")
         } else {
-            return 4.0 + random.float(f32) * 1.0;
+            return 4.0 + random.float(f64) * 1.0;
         }
     }
 
@@ -166,31 +193,31 @@ pub const Planet = struct {
         const size = generate_planet_size(random);
 
         var candidate_position = @Vector(2, f32){
-            random.float(f32) * size_x,
-            random.float(f32) * size_y,
+            random.float(f32) * @as(f32, @floatFromInt(size_x)),
+            random.float(f32) * @as(f32, @floatFromInt(size_y)),
         };
 
-        while (!is_valid_planet_position(candidate_position, 100, other_planets)) {
-            candidate_position[0] = random.float(f32) * size_x;
-            candidate_position[1] = random.float(f32) * size_y;
+        while (!is_valid_planet_position(candidate_position, size, other_planets)) {
+            candidate_position[0] = random.float(f32) * @as(f32, @floatFromInt(size_x));
+            candidate_position[1] = random.float(f32) * @as(f32, @floatFromInt(size_y));
         }
 
         return .{
             .id = id,
             .size = size,
-            .halite = size * (0.8 + (random.float() * 0.4)),
-            .position = candidate_position,
+            .halite = size * (0.8 + (random.float(f64) * 0.4)),
+            .position = @as(@Vector(2, f64), @floatCast(candidate_position)),
         };
     }
 };
 
 pub const ShipState = union(enum) {
     /// Docking planet in x turns
-    DOCKING: .{ Id, u3 },
+    DOCKING: struct { id: Id, turns: u3 },
     DOCKED: Id,
 
     /// Undocking planet in x turns
-    UNDOCKING: .{ Id, u3 },
+    UNDOCKING: struct { id: Id, turns: u3 },
     UNDOCKED,
 };
 
@@ -236,7 +263,7 @@ pub const Ship = struct {
     pub fn validate_command(self: Self, command: ShipCommand, planets: PlanetList) !void {
         switch (command) {
             .THRUST => |thrust| {
-                if (thrust[1] > MAX_VELOCITY) {
+                if (@as(f64, @floatFromInt(thrust.magnitude)) > MAX_VELOCITY) {
                     return error.InvalidThrust;
                 }
 
@@ -248,7 +275,8 @@ pub const Ship = struct {
                 switch (self.state) {
                     .UNDOCKED => {
                         if (planets.get(planet1)) |planet| {
-                            const distance = self.position - planet.position;
+                            const diff = self.position - planet.position;
+                            const distance = @sqrt(@reduce(.Add, diff * diff));
 
                             if (distance > planet.size + DOCK_RADIUS + SHIP_RADIUS) {
                                 return error.InvalidCommand;
@@ -270,18 +298,34 @@ pub const Ship = struct {
         }
     }
 
-    pub fn move(self: Self, command: ShipCommand, map_size: @Vector(2, u64)) !void {
+    pub fn move(self: *Self, command: ShipCommand, map_size: @Vector(2, u64)) !void {
         switch (command) {
             .THRUST => |thrust| self.position = self.position + thrust.to_cartesian(),
             else => return,
         }
 
-        if (self.position[0] < 0 or self.position[1] < 0 or self.position > map_size) {
+        if (self.position[0] < 0 or self.position[1] < 0 or
+            self.position[0] > @as(f64, @floatFromInt(map_size[0])) or
+            self.position[1] > @as(f64, @floatFromInt(map_size[1])))
+        {
             return error.InvalidPosition;
         }
     }
 };
 
 const std = @import("std");
-pub const IdLib = @import("lib/id.zig");
+pub const IdLib = @import("id.zig");
 const Id = IdLib.Id;
+
+test "Map init and add_player" {
+    const allocator = std.testing.allocator;
+    var map = try Map.init(4, 100, 100, 5, allocator);
+    defer map.deinit();
+
+    try map.add_player("Player 1");
+    try map.add_player("Player 2");
+
+    try std.testing.expectEqual(@as(usize, 4), map.players.len);
+    try std.testing.expect(map.players[0].id != 0);
+    try std.testing.expect(map.players[1].id != 0);
+}

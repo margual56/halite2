@@ -12,7 +12,7 @@ pub const UUIDGenerator = struct {
         return .{ .counter = seed };
     }
 
-    pub fn next(self: Self) Id {
+    pub fn next(self: *Self) Id {
         // Wrap-around addition
         self.counter = self.counter +% 1;
 
