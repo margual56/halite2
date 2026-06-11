@@ -5,28 +5,19 @@ pub const BotCommunicator = struct {
         return .{ .allocator = allocator };
     }
 
-    /// Sends the one-time initialization handshake
+    /// Sends the one-time initialization handshake (Engine -> Bot)
     pub fn sendInit(self: *const BotCommunicator, writer: anytype, map: *Map, player_id: Id) !void {
         _ = self;
         // Line 1: <number_of_players> <my_player_id>
         try writer.print("{d} {d}\n", .{ map.players.len, player_id });
 
-        // Line 2+: For every player, <player_id> <player_name>
-        for (map.players) |player| {
-            // Ensure null-terminated/padded strings are cleaned up for printing
-            const name_slice = std.mem.sliceTo(&player.name, 0);
-            try writer.print("{d} {s}\n", .{ player.id, name_slice });
-        }
-
-        // Line 3: <width> <height>
+        // Line 2: <width> <height>
         try writer.print("{d} {d}\n", .{ map.size[0], map.size[1] });
 
-        // Line 4+: <num_planets> ...
+        // Line 3+: <num_planets> ...
         try writer.print("{d}\n", .{map.planets.count()});
         var planet_it = map.planets.valueIterator();
         while (planet_it.next()) |planet| {
-            // <planet_id> <x> <y> <radius> <docking_spots> <current_production> <remaining_resources>
-            // Docking spots, current production, and resources are mocked for now
             try writer.print("{d} {d:.2} {d:.2} {d:.2} 3 0 {d:.2}\n", .{
                 planet.id, planet.position[0], planet.position[1], planet.size, planet.halite,
             });

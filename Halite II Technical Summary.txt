@@ -1,0 +1,163 @@
+Halite II Technical Summary
+
+This document serves as a comprehensive reference for the core mechanics, procedural generation algorithms, and engine architecture of Halite II.
+
+1. Core Game Rules
+
+Ships:
+
+Starting Fleet: 3 ships per player.
+
+Health: 255 (stored as an 8-bit unsigned integer).
+
+Radius: 0.5 units (circular collision).
+
+Combat: Auto-fires on enemies within a 5.0-unit radius (64 damage/turn).
+
+Docking:
+
+Docking Radius: 4.0 units from the ship center (Planet Radius + 4.5).
+
+Process: Takes 5 turns to initiate and 5 turns to complete.
+
+State Locking: Commands are hard-locked; Undocked ships can only move or dock; Docked ships can only mine or undock.
+
+Physics:
+
+Coordinate System: Continuous 2D plane using 64-bit floating-point numbers.
+
+Determinism: Engine ensures identical physics resolution for all players.
+
+2. Map Generation Algorithms
+
+Planet Placement (Poisson Disk Sampling):
+
+Candidate $(x, y)$ coordinates generated via next.float().
+
+Validation: Only placed if distance to existing planets is $\ge$ (Sum of Radii + Buffer).
+
+Planet Sizing (Weighted Tiered Distribution):
+
+Small (60%): Radius $\in$ [2.0, 2.5]
+
+Medium (30%): Radius $\in$ [3.0, 3.5]
+
+Large (10%): Radius $\in$ [4.0, 5.0]
+
+Resource Distribution:
+
+Base Value: Small (300), Medium (600), Large (900).
+
+Variance: Multiplier of 0.8 + (next.float() * 0.4) applied per planet.
+
+Starting Positions (Rotational Symmetry):
+
+Equidistant placement from center $(0,0)$ at radius $R$.
+
+Angle $\theta_i = \frac{2\pi i}{N} + \phi$, where $\phi$ is a random rotation offset.
+
+3. Engine Architecture & Pipeline
+
+Communication: Bots run as sub-processes. Engine communicates via stdin (Universe state) and stdout (Commands).
+
+Initialization: Engine blasts map data, planet registry, and player ID to stdin on start.
+
+Command Pipeline (Sequential State Machine):
+
+Ingestion: Buffer bot output, deduplicate ship commands, drop invalid moves.
+
+Bucketing: Sort commands into Move, Dock, and Undock buckets.
+
+Resolution:
+
+Phase 1 (Move): Resolve thrust, calculate collisions via Spatial Hash.
+
+Phase 2 (Combat): Evaluate weapon radii in 5.0-unit grid cells.
+
+Phase 3 (Docking): Validate availability and transition ship states (Undocked $\rightarrow$ Docking $\rightarrow$ Docked).
+
+Fail-safe: If a ship is destroyed in Phase 1 or 2, all pending commands for that ship_id are purged from the pipeline in Phase 3.
+
+4. Bot Communication Protocol (Command Syntax)
+
+Bots must print these commands to stdout, followed by a newline (\n).
+
+Thrust Command: t <ship_id> <angle> <magnitude>
+
+angle: 0-359; magnitude: 0-7.
+
+Docking Command: d <ship_id> <planet_id>
+
+Ship must be Undocked and within range.
+
+Undocking Command: u <ship_id>
+
+Ship must be Docked.
+
+Rules:
+
+Only one command per ship per turn.
+
+Debugging prints to stdout will crash the bot.
+
+Commands are processed in the engine's internal phases regardless of output line order.
+
+Halite II Engine Communication Protocol
+
+The engine communicated with bots using raw text streams via stdin. Every line sent must be parsed by the bot to extract the game state.
+
+1. Initialization (Sent once at game start)
+
+The engine sends a handshake containing necessary environment variables and the map registry.
+
+Line 1: <number_of_players> <my_player_id>
+
+Line 2+: For every player, <player_id> <player_name>
+
+Line 3: <width> <height> (Map dimensions)
+
+Line 4+ (Planets): <num_planets> followed by details for each:
+<planet_id> <x> <y> <radius> <docking_spots> <current_production> <remaining_resources>
+
+2. Turn-by-Turn Update (Sent at the start of every turn)
+
+The engine provides a "God's eye view" of the entire universe. Each turn starts with a fresh snapshot.
+
+Turn Header: <turn_number>
+
+Player Data:
+For every player in the game:
+<player_id> <num_ships>
+Then, for every ship owned by that player:
+<ship_id> <x> <y> <health> <docked_status> <docked_planet_id> <docking_progress> <weapon_cooldown>
+
+Planet Data:
+For every planet on the map:
+<planet_id> <owner_id> <docked_ship_count> <current_production> <remaining_resources>
+
+Parsing Logic Example (Pseudo-code)
+
+# To read the state
+line = sys.stdin.readline()
+parts = line.split()
+
+# If parsing ships:
+num_ships = int(parts[1])
+for _ in range(num_ships):
+    ship_data = sys.stdin.readline().split()
+    ship = Ship(
+        id=int(ship_data[0]),
+        x=float(ship_data[1]),
+        y=float(ship_data[2]),
+        health=int(ship_data[3]),
+        status=int(ship_data[4])
+    )
+
+
+Key Constraints
+
+No Delimiters other than Spaces: The engine did not use JSON or XML; it used minimal, space-delimited text to keep parsing overhead near zero.
+
+Deterministic Order: The order of the lines and the order of the fields within a line were fixed for every turn. If your bot skipped a single sys.stdin.readline() call, the entire state would be misaligned, leading to catastrophic logic failures.
+
+Synchronization: The engine waited for your bot to finish processing this line and print a response to stdout before it proceeded to calculate the next turn.

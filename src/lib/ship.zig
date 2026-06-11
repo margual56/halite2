@@ -1,4 +1,4 @@
-pub const ShipList = std.ArrayList(Ship);
+pub const ShipList = std.ArrayListUnmanaged(Ship);
 pub const DOCK_RADIUS = 4.0;
 pub const SHIP_RADIUS = 0.5;
 

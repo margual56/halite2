@@ -3,6 +3,8 @@ pub const Player = struct {
     ships: ShipList,
     resources: f64,
     name: [16]u8,
+    stdin: std.Io.File,
+    stdout: std.Io.File,
 
     const Self = @This();
 

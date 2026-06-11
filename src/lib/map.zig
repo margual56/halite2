@@ -28,14 +28,7 @@ pub const Map = struct {
         }
 
         const players = try allocator.alloc(Player, config.n_players);
-        for (players) |*player| {
-            player.* = .{
-                .id = 0,
-                .ships = ShipList.empty,
-                .resources = 0,
-                .name = std.mem.zeroes([16]u8),
-            };
-        }
+        for (players) |*p| p.* = .{ .id = 0, .ships = .empty, .resources = 0.0, .name = std.mem.zeroes([16]u8), .stdin = undefined, .stdout = undefined };
 
         return .{
             .size = .{ config.map_size_x, config.map_size_y },
@@ -63,7 +56,7 @@ pub const Map = struct {
         return candidate;
     }
 
-    pub fn add_player(self: *Self, name_raw: []const u8) !void {
+    pub fn add_player(self: *Self, name_raw: []const u8, stdin: std.Io.File, stdout: std.Io.File) !void {
         const id = self.uuid_generator.next();
 
         var name: [16]u8 = std.mem.zeroes([16]u8);
@@ -77,15 +70,21 @@ pub const Map = struct {
         const pos = self.get_player_initial_position(i);
 
         var player = &self.players[i];
-        player.id = id;
-        player.name = name;
+        player.* = .{
+            .id = id,
+            .ships = .empty,
+            .resources = 0.0,
+            .name = name,
+            .stdin = stdin,
+            .stdout = stdout,
+        };
 
         try player.ships.append(self.allocator, try Ship.new(self.uuid_generator.next(), id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[0][1]));
         try player.ships.append(self.allocator, try Ship.new(self.uuid_generator.next(), id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[120][1]));
         try player.ships.append(self.allocator, try Ship.new(self.uuid_generator.next(), id, @as(@Vector(2, f64), @floatCast(pos)) + lut_thrusts[240][1]));
     }
 
-    pub const SpatialMap = std.AutoHashMap(u64, std.ArrayList(*Ship));
+    pub const SpatialMap = std.AutoHashMap(u64, std.ArrayListUnmanaged(*Ship));
 
     pub fn get_spatial_map(self: *Self) !SpatialMap {
         var spatial_map = SpatialMap.init(self.allocator);
@@ -104,7 +103,7 @@ pub const Map = struct {
 
                 const gop = try spatial_map.getOrPut(key);
                 if (!gop.found_existing) {
-                    gop.value_ptr.* = std.ArrayList(*Ship).empty;
+                    gop.value_ptr.* = .empty;
                 }
                 try gop.value_ptr.append(self.allocator, ship);
             }
@@ -115,7 +114,7 @@ pub const Map = struct {
     pub fn deinit(self: *Self) void {
         self.planets.deinit();
         for (self.players) |*player| {
-            player.deinit(self.allocator);
+            if (player.id != 0) player.deinit(self.allocator);
         }
         self.allocator.free(self.players);
     }

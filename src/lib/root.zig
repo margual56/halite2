@@ -10,11 +10,20 @@ const Id = IdLib.Id;
 const std = @import("std");
 test "Map init and add_player" {
     const allocator = std.testing.allocator;
-    var test_map = try map.Map.init(4, 100, 100, 5, allocator);
+    const io = std.testing.io;
+    const config = @import("config.zig").Config{
+        .n_players = 4,
+        .n_planets = 5,
+        .map_size_x = 100,
+        .map_size_y = 100,
+    };
+    var test_map = try map.Map.init(config, allocator);
     defer test_map.deinit();
 
-    try test_map.add_player("Player 1");
-    try test_map.add_player("Player 2");
+    const null_file = try std.Io.Dir.openFileAbsolute(io, "/dev/null", .{ .mode = .read_write });
+    defer null_file.close(io);
+    try test_map.add_player("Player 1", null_file, null_file);
+    try test_map.add_player("Player 2", null_file, null_file);
 
     try std.testing.expectEqual(@as(usize, 4), test_map.players.len);
     try std.testing.expect(test_map.players[0].id != 0);
@@ -23,10 +32,19 @@ test "Map init and add_player" {
 
 test "get_spatial_map" {
     const allocator = std.testing.allocator;
-    var test_map = try map.Map.init(1, 100, 100, 0, allocator);
+    const io = std.testing.io;
+    const config = @import("config.zig").Config{
+        .n_players = 1,
+        .n_planets = 0,
+        .map_size_x = 100,
+        .map_size_y = 100,
+    };
+    var test_map = try map.Map.init(config, allocator);
     defer test_map.deinit();
 
-    try test_map.add_player("Player 1");
+    const null_file = try std.Io.Dir.openFileAbsolute(io, "/dev/null", .{ .mode = .read_write });
+    defer null_file.close(io);
+    try test_map.add_player("Player 1", null_file, null_file);
 
     var spatial_map = try test_map.get_spatial_map();
     defer {
