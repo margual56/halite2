@@ -31,6 +31,13 @@
 ///     u32  id
 ///     f64  halite
 ///     u8   docked_count
+/// Footer (written once after all turns):
+///   u8      n_players
+///   for each player (sorted by rank, best first):
+///     u32     id
+///     u32     ship_count
+///     f64     resources
+///     u8      rank  (1 = winner)
 pub const Replay = struct {
     /// Accumulates all bytes (header + turns) until finish() writes them.
     data: std.ArrayListUnmanaged(u8),
@@ -89,16 +96,16 @@ pub const Replay = struct {
                 try appendF64(&self.data, self.allocator, ship.position[1]);
                 try appendU8(&self.data, self.allocator, ship.health);
                 try appendU8(&self.data, self.allocator, switch (ship.state) {
-                    .UNDOCKED  => 0,
-                    .DOCKING   => 1,
-                    .DOCKED    => 2,
+                    .UNDOCKED => 0,
+                    .DOCKING => 1,
+                    .DOCKED => 2,
                     .UNDOCKING => 3,
                 });
                 try appendU32(&self.data, self.allocator, switch (ship.state) {
-                    .DOCKING   => |d| d.id,
-                    .DOCKED    => |id| id,
+                    .DOCKING => |d| d.id,
+                    .DOCKED => |id| id,
                     .UNDOCKING => |u| u.id,
-                    .UNDOCKED  => 0,
+                    .UNDOCKED => 0,
                 });
             }
         }
@@ -111,7 +118,48 @@ pub const Replay = struct {
         }
     }
 
-    pub fn finish(self: *Replay) void {
+    pub fn finish(self: *Replay, map: *const Map) void {
+        // --- Rankings footer ---
+        // Sort players by ship count desc, then resources desc
+        const RankedPlayer = struct {
+            id: u32,
+            ship_count: u32,
+            resources: f64,
+        };
+
+        var ranked: [16]RankedPlayer = undefined; // max 16 players
+        const n = map.players.len;
+        for (map.players, 0..) |*player, i| {
+            ranked[i] = .{
+                .id = player.id,
+                .ship_count = @intCast(player.ships.items.len),
+                .resources = player.resources,
+            };
+        }
+
+        // Bubble sort (n is tiny — 2–4 players)
+        for (0..n) |i| {
+            for (0..n - i - 1) |j| {
+                const a = ranked[j];
+                const b = ranked[j + 1];
+                const a_better = a.ship_count > b.ship_count or
+                    (a.ship_count == b.ship_count and a.resources > b.resources);
+                if (!a_better) {
+                    ranked[j] = b;
+                    ranked[j + 1] = a;
+                }
+            }
+        }
+
+        appendU32(&self.data, self.allocator, 0xFFFFFFFF) catch {};
+        appendU8(&self.data, self.allocator, @intCast(n)) catch {};
+        for (ranked[0..n], 1..) |p, rank| {
+            appendU32(&self.data, self.allocator, p.id) catch {};
+            appendU32(&self.data, self.allocator, p.ship_count) catch {};
+            appendF64(&self.data, self.allocator, p.resources) catch {};
+            appendU8(&self.data, self.allocator, @intCast(rank)) catch {};
+        }
+
         std.debug.print("[replay] finish: writing {} bytes total\n", .{self.data.items.len});
         defer {
             self.data.deinit(self.allocator);

@@ -106,11 +106,11 @@ pub fn main(init: std.process.Init) !void {
 
     const replay_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, "replay.hlt", .{});
     var replay = try Replay.init(replay_file, io, &map, allocator);
-    defer replay.finish();
+    defer replay.finish(&map);
 
     // --- 2. MAIN GAME LOOP ---
     var turn: u32 = 0;
-    while (turn < config.max_turns) : (turn += 1) {
+    while (turn < config.max_turns and !map.one_player_remaining()) : (turn += 1) {
         var all_validated_commands = try allocator.alloc(std.AutoHashMap(IdLib.Id, ShipCommand), map.players.len);
         defer {
             for (all_validated_commands) |*v| v.deinit();
@@ -149,12 +149,37 @@ pub fn main(init: std.process.Init) !void {
         for (map.players) |*player| player.process_combat(spatial_map, map.size, config);
         for (map.players) |*player| player.cleanup_dead_ships(&map.planets);
         for (map.players) |*player| player.process_docking(&map.planets);
-        for (map.players) |*player| player.process_mining_and_spawning();
+        for (map.players) |*player| try player.process_mining_and_spawning(
+            &map.planets,
+            &map.uuid_generator,
+            allocator,
+            turn,
+            config,
+        );
 
         try replay.writeTurn(turn, &map);
         if (turn % 50 == 0) std.debug.print("Processed turn {d}\n", .{turn});
     }
 
+    const winner = map.get_winner();
+    if (winner) |w| {
+        std.debug.print("Winner: {s} (id={}) ships={} resources={d:.1}\n", .{
+            w.name, w.id, w.ships.items.len, w.resources,
+        });
+    } else {
+        std.debug.print("Draw\n", .{});
+    }
+
+    // Notify each bot
+    for (map.players) |*player| {
+        var buf: [256]u8 = undefined;
+        var fw = player.stdin.writerStreaming(io, &buf);
+        const rank: u8 = if (winner) |w| (if (w.id == player.id) 1 else 2) else 0;
+        comms.sendFinish(&fw.interface, &map, player.id, rank) catch |e| {
+            std.debug.print("sendFinish failed for player {}: {}\n", .{ player.id, e });
+        };
+        fw.flush() catch {};
+    }
     std.debug.print("Game finished after {d} turns.\n", .{turn});
 }
 

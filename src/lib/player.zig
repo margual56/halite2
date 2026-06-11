@@ -16,8 +16,23 @@ pub const Player = struct {
         var validated = std.AutoHashMap(Id, ShipCommand).init(allocator);
         errdefer validated.deinit();
 
+        // Track how many ships have been accepted for docking per planet this turn,
+        // so we don't over-book a planet within a single batch of commands.
+        var pending_docks = std.AutoHashMap(Id, u32).init(allocator);
+        defer pending_docks.deinit();
+
         for (self.ships.items) |*ship| {
             if (raw_commands.get(ship.id)) |command| {
+                // For DOCK commands, check capacity including already-pending docks this turn
+                if (command == .DOCK) {
+                    const planet_id = command.DOCK;
+                    if (planets.get(planet_id)) |planet| {
+                        const pending = pending_docks.get(planet_id) orelse 0;
+                        if (planet.docked_count + pending >= planet.docking_spots()) continue;
+                        try pending_docks.put(planet_id, pending + 1);
+                    }
+                }
+
                 ship.validate_command(command, planets, config) catch continue;
 
                 switch (command) {
@@ -139,9 +154,51 @@ pub const Player = struct {
         }
     }
 
-    pub fn process_mining_and_spawning(self: *Self) void {
-        _ = self;
-        // TODO: Implement mining from planets and ship spawning
+    pub fn process_mining_and_spawning(
+        self: *Self,
+        planets: *PlanetList,
+        uuid_generator: *UUIDGenerator,
+        allocator: std.mem.Allocator,
+        turn: u32,
+        config: Config,
+    ) !void {
+        var planet_it = planets.valueIterator();
+        while (planet_it.next()) |planet| {
+            // Count ships owned by this player docked at this planet
+            var docked_count: u32 = 0;
+            for (self.ships.items) |ship| {
+                switch (ship.state) {
+                    .DOCKED => |planet_id| {
+                        if (planet_id == planet.id and ship.owner_id == self.id)
+                            docked_count += 1;
+                    },
+                    else => {},
+                }
+            }
+
+            if (docked_count == 0) continue;
+
+            // Mining: each docked ship mines a fraction of remaining halite
+            const mined = planet.halite * config.mining_rate * @as(f64, @floatFromInt(docked_count));
+            const actual_mined: f64 = @min(mined, planet.halite);
+            planet.halite -= actual_mined;
+            self.resources += actual_mined;
+
+            // Spawning: every ship_spawn_interval turns, attempt to spawn a ship
+            if (turn % config.ship_spawn_interval == 0 and self.resources >= config.ship_cost) {
+                // Spawn adjacent to planet surface, at a fixed offset angle per existing ship count
+                const angle = @as(f64, @floatFromInt(turn % 360)) * std.math.pi / 180.0;
+                const spawn_r = planet.size + SHIP_RADIUS * 2.0 + 1.0;
+                const spawn_pos = @Vector(2, f64){
+                    @as(f64, @floatCast(planet.position[0])) + spawn_r * @cos(angle),
+                    @as(f64, @floatCast(planet.position[1])) + spawn_r * @sin(angle),
+                };
+
+                const new_ship = try Ship.new(uuid_generator.next(), self.id, spawn_pos);
+                try self.ships.append(allocator, new_ship);
+                self.resources -= config.ship_cost;
+            }
+        }
     }
 };
 
@@ -149,9 +206,11 @@ const std = @import("std");
 
 const PlanetList = @import("planet.zig").PlanetList;
 const ShipList = @import("ship.zig").ShipList;
+const Ship = @import("ship.zig").Ship;
 const ShipCommand = @import("ship.zig").ShipCommand;
 const Map = @import("map.zig").Map;
 const Config = @import("config.zig").Config;
 const Id = @import("id.zig").Id;
+const UUIDGenerator = @import("id.zig").UUIDGenerator;
 const SHIP_RADIUS = @import("ship.zig").SHIP_RADIUS;
 const distSq = @import("utils.zig").distSq;

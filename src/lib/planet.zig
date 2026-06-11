@@ -44,7 +44,7 @@ pub const Planet = struct {
         return .{
             .id = id,
             .size = size,
-            .halite = size * (0.8 + (random.float(f64) * 0.4)),
+            .halite = 100 * size * (0.8 + (random.float(f64) * 0.4)),
             .position = candidate_position,
         };
     }

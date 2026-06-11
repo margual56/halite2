@@ -1,5 +1,4 @@
 pub const BotCommunicator = struct {
-
     /// Sends the one-time initialization handshake (Engine -> Bot)
     pub fn sendInit(self: *const BotCommunicator, writer: anytype, map: *Map, player_id: Id) !void {
         _ = self;
@@ -99,6 +98,21 @@ pub const BotCommunicator = struct {
         }
 
         return commands;
+    }
+
+    /// Sends the game-over message to a bot
+    pub fn sendFinish(self: *const BotCommunicator, writer: anytype, map: *Map, player_id: Id, rank: u8) !void {
+        _ = self;
+        // Final standings
+        try writer.print("done\n", .{});
+        try writer.print("{d} {d}\n", .{ player_id, rank });
+        for (map.players) |player| {
+            try writer.print("{d} {d} {d:.2}\n", .{
+                player.id,
+                player.ships.items.len,
+                player.resources,
+            });
+        }
     }
 };
 

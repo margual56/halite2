@@ -17,4 +17,11 @@ pub const Config = struct {
     /// Maximum processing time for the players
     /// per turn (in seconds)
     turn_timeout: u32 = 2,
+
+    /// Halite mined per docked ship per turn, as a fraction of remaining halite
+    mining_rate: f64 = 0.02,
+    /// Halite cost to spawn a new ship
+    ship_cost: f64 = 40.0,
+    /// Turns between ship spawns (per planet)
+    ship_spawn_interval: u8 = 8,
 };

@@ -73,7 +73,23 @@ An empty turn (no commands) must still send a blank line: `\n`
 
 ---
 
-## 3. Constants
+## 3. Game over (once, at game end)
+
+### Engine → Bot
+
+```
+done
+{n_players}
+{player_id} {ship_count} {resources:.2} {rank}    ← repeated n_players times, sorted rank 1 first
+```
+
+- `rank` is **1-based**. `1` = winner, `2` = second place, etc.
+- In the event of a draw, tied players share the same rank.
+- Bots may read this message or ignore it — the engine closes stdin immediately after.
+
+---
+
+## 4. Constants
 
 | Name             | Value | Notes                        |
 |------------------|-------|------------------------------|
@@ -84,7 +100,7 @@ An empty turn (no commands) must still send a blank line: `\n`
 
 ---
 
-## 4. Keeping starter packs in sync
+## 5. Keeping starter packs in sync
 
 The engine implementation lives in `src/lib/bot_protocol.zig`.
 When the protocol changes, update this file **and** `bot_protocol.zig` together.

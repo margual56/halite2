@@ -113,6 +113,40 @@ pub const Map = struct {
         return spatial_map;
     }
 
+    pub fn one_player_remaining(self: *Self) bool {
+        var alive: u32 = 0;
+        for (self.players) |player| {
+            if (player.ships.items.len > 0) alive += 1;
+        }
+        return alive <= 1;
+    }
+
+    pub fn get_winner(self: *Self) ?*Player {
+        var best_player: ?*Player = null;
+        var best_ships: usize = 0;
+        var best_resources: f64 = 0;
+        var tied = false;
+
+        for (self.players) |*player| {
+            const ship_count = player.ships.items.len;
+            if (ship_count > best_ships) {
+                best_ships = ship_count;
+                best_resources = player.resources;
+                best_player = player;
+                tied = false;
+            } else if (ship_count == best_ships) {
+                if (player.resources > best_resources) {
+                    best_resources = player.resources;
+                    best_player = player;
+                    tied = false;
+                } else if (player.resources == best_resources) {
+                    tied = true;
+                }
+            }
+        }
+
+        return if (tied) null else best_player;
+    }
     pub fn deinit(self: *Self) void {
         self.planets.deinit();
         for (self.players) |*player| {
