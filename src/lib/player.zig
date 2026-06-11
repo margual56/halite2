@@ -61,6 +61,7 @@ pub const Player = struct {
                 for (list.items) |other_ship| {
                     if (other_ship.id == ship.id) continue;
                     if (other_ship.health == 0) continue;
+                    if (other_ship.owner_id == self.id) continue;
 
                     const d2 = distSq(ship.position, other_ship.position);
 
@@ -70,10 +71,7 @@ pub const Player = struct {
                         break;
                     }
 
-                    // Only damage ships from other players
-                    if (other_ship.owner_id != self.id) {
-                        other_ship.health = std.math.sub(u8, other_ship.health, config.ship_damage) catch 0;
-                    }
+                    other_ship.health = std.math.sub(u8, other_ship.health, config.ship_damage) catch 0;
                 }
             }
         }
