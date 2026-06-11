@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const replay_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, "replay.hlt", .{});
-    var replay = try Replay.init(replay_file, io, &map);
+    var replay = try Replay.init(replay_file, io, &map, allocator);
     defer replay.finish();
 
     // --- 2. MAIN GAME LOOP ---
