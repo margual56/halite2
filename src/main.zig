@@ -104,6 +104,10 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Bot {d} successfully connected as: {s}\n", .{ i, bot_name });
     }
 
+    const replay_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, "replay.hlt", .{});
+    var replay = try Replay.init(replay_file, io, &map);
+    defer replay.finish();
+
     // --- 2. MAIN GAME LOOP ---
     var turn: u32 = 0;
     while (turn < config.max_turns) : (turn += 1) {
@@ -147,6 +151,7 @@ pub fn main(init: std.process.Init) !void {
         for (map.players) |*player| player.process_docking(&map.planets);
         for (map.players) |*player| player.process_mining_and_spawning();
 
+        try replay.writeTurn(turn, &map);
         if (turn % 50 == 0) std.debug.print("Processed turn {d}\n", .{turn});
     }
 
@@ -222,5 +227,6 @@ const IdLib = halite2.IdLib;
 const BotCommunicator = halite2.BotCommunicator;
 const Map = halite2.map.Map;
 const Player = halite2.player.Player;
+const Replay = halite2.Replay;
 const Config = halite2.Config;
 const ShipCommand = halite2.ship.ShipCommand;

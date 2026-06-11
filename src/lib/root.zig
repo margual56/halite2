@@ -1,4 +1,5 @@
 pub const IdLib = @import("id.zig");
+pub const Replay = @import("replay.zig").Replay;
 pub const Config = @import("config.zig").Config;
 pub const BotCommunicator = @import("bot_protocol.zig").BotCommunicator;
 pub const map = @import("map.zig");

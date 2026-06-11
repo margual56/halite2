@@ -1,0 +1,8 @@
+.{
+    .name = .my_halite_bot,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0xa81d7699dd771373,
+    .dependencies = .{},
+    .paths = .{"."},
+}
