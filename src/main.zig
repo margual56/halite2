@@ -14,7 +14,7 @@ pub fn main() !void {
         .max_velocity = 7.0,
     };
 
-    var map = try halite2.Map.init(config, allocator);
+    var map = try Map.init(config, allocator);
     defer map.deinit();
 
     try map.add_player("Test player 1");
@@ -22,20 +22,48 @@ pub fn main() !void {
     try map.add_player("Test player 3");
     try map.add_player("Test player 4");
 
+    const comms = halite2.BotCommunicator.init(allocator);
+
     // Game loop
     var turn: u32 = 0;
     while (turn < config.max_turns) : (turn += 1) {
         // 1. Validate and gather commands for each player
-        var all_validated_commands = try allocator.alloc(std.AutoHashMap(IdLib.Id, halite2.ShipCommand), map.players.len);
+        var all_validated_commands = try allocator.alloc(std.AutoHashMap(IdLib.Id, ShipCommand), map.players.len);
         defer {
             for (all_validated_commands) |*v| v.deinit();
             allocator.free(all_validated_commands);
         }
 
         for (map.players, 0..) |*player, i| {
-            // In a real game, these would come from player's bot via I/O.
-            // For now, we provide an empty command map.
-            var raw_commands = std.AutoHashMap(IdLib.Id, halite2.ShipCommand).init(allocator);
+            // 1. Where the engine would WRITE to the bot's stdin
+            var mock_stdin = std.Io.Writer.Allocating.init(allocator);
+            defer mock_stdin.deinit();
+
+            if (turn == 0) {
+                try comms.sendInit(&mock_stdin.writer, &map, player.id);
+            }
+            try comms.sendTurnUpdate(&mock_stdin.writer, &map, turn);
+
+            // 2. Where the engine would READ from the bot's stdout
+            // Here we inject a hard-coded command string depending on the player's ships.
+            // Example mock: We grab the first ship and tell it to move.
+            var mock_bot_writer = std.Io.Writer.Allocating.init(allocator);
+            defer mock_bot_writer.deinit();
+            const writer = &mock_bot_writer.writer;
+
+            if (player.ships.items.len > 0) {
+                const ship_id = player.ships.items[0].id;
+                // e.g., "t <ship_id> 90 2\n" -> thrust ship 90 degrees at speed 2
+                try writer.print("t {d} 90 2\n", .{ship_id});
+            } else {
+                try writer.writeAll("\n");
+            }
+
+            const mock_bot_response = mock_bot_writer.written();
+
+            // 3. Actually parse the commands back into the engine using the struct
+            var mock_stdout_stream = std.Io.Reader.fixed(mock_bot_response);
+            var raw_commands = try comms.readCommands(&mock_stdout_stream);
             defer raw_commands.deinit();
 
             all_validated_commands[i] = try player.validate_and_gather_commands(raw_commands, map.planets, allocator, config);
@@ -79,3 +107,6 @@ pub fn main() !void {
 const std = @import("std");
 const halite2 = @import("halite2");
 const IdLib = halite2.IdLib;
+const BotCommunicator = halite2.BotCommunicator;
+const Map = halite2.map.Map;
+const ShipCommand = halite2.ship.ShipCommand;
