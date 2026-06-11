@@ -5,6 +5,11 @@ pub const Planet = struct {
     size: f64,
     halite: f64,
     position: @Vector(2, f64),
+    docked_count: u32 = 0,
+
+    pub fn docking_spots(self: Planet) u32 {
+        return @intFromFloat(@floor(self.size));
+    }
 
     const Self = @This();
 

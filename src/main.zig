@@ -56,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
     var map = try Map.init(config, allocator);
     defer map.deinit();
 
-    const comms = BotCommunicator.init(allocator);
+    const comms: BotCommunicator = .{};
 
     // Keep references to our running bots
     var children = try allocator.alloc(std.process.Child, num_bots);
@@ -112,23 +112,17 @@ pub fn main(init: std.process.Init) !void {
             for (all_validated_commands) |*v| v.deinit();
             allocator.free(all_validated_commands);
         }
+        // Pre-init so deinit is safe if a thread errors before writing its result.
+        for (all_validated_commands) |*v| v.* = std.AutoHashMap(IdLib.Id, ShipCommand).init(std.heap.page_allocator);
 
-        // Phase A: I/O Pipeline
-        for (map.players, 0..) |*player, i| {
-            var stdin_buf: [4096]u8 = undefined;
-            var stdin_writer = children[i].stdin.?.writerStreaming(io, &stdin_buf);
-            var stdout_buf: [4096]u8 = undefined;
-            var stdout_reader = children[i].stdout.?.readerStreaming(io, &stdout_buf);
-
-            // Push turn snapshot
-            try comms.sendTurnUpdate(&stdin_writer.interface, &map, turn);
-            try stdin_writer.flush();
-
-            // Pull and parse bot commands
-            var raw_commands = try comms.readCommands(&stdout_reader.interface);
-            defer raw_commands.deinit();
-
-            all_validated_commands[i] = try player.validate_and_gather_commands(raw_commands, map.planets, allocator, config);
+        // Phase A: Parallel I/O — all bots think simultaneously.
+        {
+            const ctxs = try allocator.alloc(IoCtx, map.players.len);
+            defer allocator.free(ctxs);
+            for (map.players, 0..) |*player, i|
+                ctxs[i] = .{ .player = player, .comms = &comms, .map = &map, .config = config, .turn = turn, .io = io };
+            try spawnJoin(IoCtx.run, ctxs, allocator);
+            try IoCtx.collectInto(ctxs, all_validated_commands);
         }
 
         // Phase B: Resolution Pipeline
@@ -139,10 +133,18 @@ pub fn main(init: std.process.Init) !void {
             spatial_map.deinit();
         }
 
-        for (map.players, 0..) |*player, i| player.process_moves(all_validated_commands[i], map.size);
+        // Parallel moves — each player's ships are independent.
+        {
+            const ctxs = try allocator.alloc(MoveCtx, map.players.len);
+            defer allocator.free(ctxs);
+            for (map.players, 0..) |*player, i|
+                ctxs[i] = .{ .player = player, .commands = &all_validated_commands[i], .map_size = map.size };
+            try spawnJoin(MoveCtx.run, ctxs, allocator);
+        }
+
         for (map.players) |*player| player.process_combat(spatial_map, map.size, config);
-        for (map.players) |*player| player.cleanup_dead_ships();
-        for (map.players) |*player| player.process_docking(map.planets);
+        for (map.players) |*player| player.cleanup_dead_ships(&map.planets);
+        for (map.players) |*player| player.process_docking(&map.planets);
         for (map.players) |*player| player.process_mining_and_spawning();
 
         if (turn % 50 == 0) std.debug.print("Processed turn {d}\n", .{turn});
@@ -151,10 +153,74 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Game finished after {d} turns.\n", .{turn});
 }
 
+// Context structs for per-player threads.
+// Threads write to their own slot — no shared mutable state between them.
+const IoCtx = struct {
+    player: *Player,
+    comms: *const BotCommunicator,
+    map: *Map,
+    config: Config,
+    turn: u32,
+    io: std.Io,
+    result: std.AutoHashMap(IdLib.Id, ShipCommand) = undefined,
+    err: ?anyerror = null,
+
+    fn run(ctx: *@This()) void {
+        ctx.doWork() catch |e| {
+            ctx.err = e;
+        };
+    }
+
+    fn doWork(ctx: *@This()) !void {
+        var in_buf: [4096]u8 = undefined;
+        var w = ctx.player.stdin.writerStreaming(ctx.io, &in_buf);
+        var out_buf: [4096]u8 = undefined;
+        var r = ctx.player.stdout.readerStreaming(ctx.io, &out_buf);
+
+        try ctx.comms.sendTurnUpdate(&w.interface, ctx.map, ctx.turn);
+        try w.flush();
+
+        var raw = try ctx.comms.readCommands(&r.interface, std.heap.page_allocator);
+        defer raw.deinit();
+
+        ctx.result = try ctx.player.validate_and_gather_commands(
+            raw,
+            ctx.map.planets,
+            std.heap.page_allocator,
+            ctx.config,
+        );
+    }
+
+    fn collectInto(ctxs: []@This(), out: []std.AutoHashMap(IdLib.Id, ShipCommand)) !void {
+        for (ctxs, 0..) |*ctx, i| {
+            if (ctx.err) |e| return e;
+            out[i] = ctx.result;
+        }
+    }
+};
+
+const MoveCtx = struct {
+    player: *Player,
+    commands: *const std.AutoHashMap(IdLib.Id, ShipCommand),
+    map_size: @Vector(2, u64),
+
+    fn run(ctx: *@This()) void {
+        ctx.player.process_moves(ctx.commands.*, ctx.map_size);
+    }
+};
+fn spawnJoin(comptime func: anytype, ctxs: anytype, allocator: std.mem.Allocator) !void {
+    const threads = try allocator.alloc(std.Thread, ctxs.len);
+    defer allocator.free(threads);
+    for (ctxs, 0..) |*ctx, i| threads[i] = try std.Thread.spawn(.{}, func, .{ctx});
+    for (threads) |t| t.join();
+}
+
 const std = @import("std");
 const clap = @import("clap");
 const halite2 = @import("halite2");
 const IdLib = halite2.IdLib;
 const BotCommunicator = halite2.BotCommunicator;
 const Map = halite2.map.Map;
+const Player = halite2.player.Player;
+const Config = halite2.Config;
 const ShipCommand = halite2.ship.ShipCommand;

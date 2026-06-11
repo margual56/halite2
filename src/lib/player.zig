@@ -79,30 +79,42 @@ pub const Player = struct {
         }
     }
 
-    pub fn cleanup_dead_ships(self: *Self) void {
+    pub fn cleanup_dead_ships(self: *Self, planets: *PlanetList) void {
         var i: usize = self.ships.items.len;
         while (i > 0) {
             i -= 1;
-            if (self.ships.items[i].health == 0) {
+            const ship = &self.ships.items[i];
+            if (ship.health == 0) {
+                if (ship.state == .DOCKED) {
+                    if (planets.getPtr(ship.state.DOCKED)) |planet| planet.docked_count -|= 1;
+                }
                 _ = self.ships.swapRemove(i);
             }
         }
     }
 
-    pub fn process_docking(self: *Self, planets: PlanetList) void {
+    pub fn process_docking(self: *Self, planets: *PlanetList) void {
         for (self.ships.items) |*ship| {
             switch (ship.state) {
                 .DOCKING => |*d| {
                     if (d.turns > 1) {
                         d.turns -= 1;
+                    } else if (planets.getPtr(d.id)) |planet| {
+                        if (planet.docked_count < planet.docking_spots()) {
+                            planet.docked_count += 1;
+                            ship.state = .{ .DOCKED = d.id };
+                        } else {
+                            ship.state = .UNDOCKED; // planet full, abort docking
+                        }
                     } else {
-                        ship.state = .{ .DOCKED = d.id };
+                        ship.state = .UNDOCKED;
                     }
                 },
                 .UNDOCKING => |*u| {
                     if (u.turns > 1) {
                         u.turns -= 1;
                     } else {
+                        if (planets.getPtr(u.id)) |planet| planet.docked_count -|= 1;
                         ship.state = .UNDOCKED;
                     }
                 },

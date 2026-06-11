@@ -1,9 +1,4 @@
 pub const BotCommunicator = struct {
-    allocator: std.mem.Allocator,
-
-    pub fn init(allocator: std.mem.Allocator) BotCommunicator {
-        return .{ .allocator = allocator };
-    }
 
     /// Sends the one-time initialization handshake (Engine -> Bot)
     pub fn sendInit(self: *const BotCommunicator, writer: anytype, map: *Map, player_id: Id) !void {
@@ -75,8 +70,9 @@ pub const BotCommunicator = struct {
     }
 
     /// Reads command stream from the bot and maps it to Zig structs
-    pub fn readCommands(self: *const BotCommunicator, reader: *std.Io.Reader) !std.AutoHashMap(Id, ShipCommand) {
-        var commands = std.AutoHashMap(Id, ShipCommand).init(self.allocator);
+    pub fn readCommands(self: *const BotCommunicator, reader: *std.Io.Reader, allocator: std.mem.Allocator) !std.AutoHashMap(Id, ShipCommand) {
+        _ = self;
+        var commands = std.AutoHashMap(Id, ShipCommand).init(allocator);
         errdefer commands.deinit();
 
         const line = try reader.takeDelimiterExclusive('\n');
