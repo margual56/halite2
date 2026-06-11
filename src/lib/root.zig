@@ -1,16 +1,5 @@
-pub const MAX_VELOCITY = 7.0;
-/// Turns to dock AND undock
-pub const TURNS_TO_DOCK = 5;
 pub const DOCK_RADIUS = 4.0;
 pub const SHIP_RADIUS = 0.5;
-pub const SHIP_DAMAGE = 64;
-
-/// Maximum time for the players to respond to
-/// the Initialization Handshake (in seconds)
-pub const INITIALIZATION_TIME = 60;
-/// Maximum processing time for the players
-/// per turn (in seconds)
-pub const TURN_PROCESS_TIME = 2;
 
 /// Look-up table for all possible thrust values
 /// Angle: [0, 360)
@@ -70,28 +59,29 @@ pub const Map = struct {
     uuid_generator: IdLib.UUIDGenerator,
     allocator: std.mem.Allocator,
     prng: std.Random.DefaultPrng,
+    config: Config,
 
     const Self = @This();
 
-    pub fn init(n_players: u32, size_x: u64, size_y: u64, n_planets: u16, allocator: std.mem.Allocator) !Self {
+    pub fn init(config: Config, allocator: std.mem.Allocator) !Self {
         const seed: u64 = 42;
         var prng = std.Random.DefaultPrng.init(seed);
         const random = prng.random();
         var uuid_generator = IdLib.UUIDGenerator.init(@as(u32, @intCast(seed & 0xFFFFFFFF)));
 
         var planets = PlanetList.init(allocator);
-        const planet_list = try allocator.alloc(Planet, n_planets);
+        const planet_list = try allocator.alloc(Planet, config.n_planets);
         defer allocator.free(planet_list);
 
-        for (0..n_planets) |i| {
+        for (0..config.n_planets) |i| {
             const id = uuid_generator.next();
 
-            const planet = Planet.new(id, @as(u32, @intCast(size_x)), @as(u32, @intCast(size_y)), planet_list[0..i], random);
+            const planet = Planet.new(id, @as(u32, @intCast(config.map_size_x)), @as(u32, @intCast(config.map_size_y)), planet_list[0..i], random);
             try planets.put(id, planet);
             planet_list[i] = planet;
         }
 
-        const players = try allocator.alloc(Player, n_players);
+        const players = try allocator.alloc(Player, config.n_players);
         for (players) |*player| {
             player.* = .{
                 .id = 0,
@@ -102,12 +92,13 @@ pub const Map = struct {
         }
 
         return .{
-            .size = .{ size_x, size_y },
+            .size = .{ config.map_size_x, config.map_size_y },
             .planets = planets,
             .players = players,
             .uuid_generator = uuid_generator,
             .allocator = allocator,
             .prng = prng,
+            .config = config,
         };
     }
 
@@ -196,22 +187,22 @@ pub const Player = struct {
         self.ships.deinit(allocator);
     }
 
-    pub fn validate_and_gather_commands(self: *Self, raw_commands: std.AutoHashMap(Id, ShipCommand), planets: PlanetList, allocator: std.mem.Allocator) !std.AutoHashMap(Id, ShipCommand) {
+    pub fn validate_and_gather_commands(self: *Self, raw_commands: std.AutoHashMap(Id, ShipCommand), planets: PlanetList, allocator: std.mem.Allocator, config: Config) !std.AutoHashMap(Id, ShipCommand) {
         var validated = std.AutoHashMap(Id, ShipCommand).init(allocator);
         errdefer validated.deinit();
 
         for (self.ships.items) |*ship| {
             if (raw_commands.get(ship.id)) |command| {
-                ship.validate_command(command, planets) catch continue;
+                ship.validate_command(command, planets, config) catch continue;
 
                 switch (command) {
                     .DOCK => |planet_id| {
-                        ship.new_state = .{ .DOCKING = .{ .id = planet_id, .turns = TURNS_TO_DOCK } };
+                        ship.new_state = .{ .DOCKING = .{ .id = planet_id, .turns = config.turns_to_dock } };
                     },
                     .UNDOCK => {
                         switch (ship.state) {
                             .DOCKED => |planet_id| {
-                                ship.new_state = .{ .UNDOCKING = .{ .id = planet_id, .turns = TURNS_TO_DOCK } };
+                                ship.new_state = .{ .UNDOCKING = .{ .id = planet_id, .turns = config.turns_to_dock } };
                             },
                             else => {},
                         }
@@ -233,7 +224,7 @@ pub const Player = struct {
         }
     }
 
-    pub fn process_combat(self: *Self, spatial_map: Map.SpatialMap, map_size: @Vector(2, u64)) void {
+    pub fn process_combat(self: *Self, spatial_map: Map.SpatialMap, map_size: @Vector(2, u64), config: Config) void {
         const cells_x = (map_size[0] + 4) / 5;
         for (self.ships.items) |*ship| {
             if (ship.health == 0) continue;
@@ -256,7 +247,7 @@ pub const Player = struct {
 
                     // Only damage ships from other players
                     if (other_ship.owner_id != self.id) {
-                        other_ship.health = std.math.sub(u8, other_ship.health, SHIP_DAMAGE) catch 0;
+                        other_ship.health = std.math.sub(u8, other_ship.health, config.ship_damage) catch 0;
                     }
                 }
             }
@@ -366,11 +357,11 @@ pub const Planet = struct {
 
 pub const ShipState = union(enum) {
     /// Docking planet in x turns
-    DOCKING: struct { id: Id, turns: u3 },
+    DOCKING: struct { id: Id, turns: u8 },
     DOCKED: Id,
 
     /// Undocking planet in x turns
-    UNDOCKING: struct { id: Id, turns: u3 },
+    UNDOCKING: struct { id: Id, turns: u8 },
     UNDOCKED,
 };
 
@@ -415,10 +406,10 @@ pub const Ship = struct {
         };
     }
 
-    pub fn validate_command(self: Self, command: ShipCommand, planets: PlanetList) !void {
+    pub fn validate_command(self: Self, command: ShipCommand, planets: PlanetList, config: Config) !void {
         switch (command) {
             .THRUST => |thrust| {
-                if (@as(f64, @floatFromInt(thrust.magnitude)) > MAX_VELOCITY) {
+                if (@as(f64, @floatFromInt(thrust.magnitude)) > config.max_velocity) {
                     return error.InvalidThrust;
                 }
 
@@ -470,6 +461,7 @@ pub const Ship = struct {
 const std = @import("std");
 pub const IdLib = @import("id.zig");
 const Id = IdLib.Id;
+pub const Config = @import("config.zig").Config;
 
 test "Map init and add_player" {
     const allocator = std.testing.allocator;

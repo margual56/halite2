@@ -1,11 +1,20 @@
-const MAX_TURNS = 200;
-
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var map = try halite2.Map.init(4, 100, 100, 5, allocator);
+    const config = halite2.Config{
+        .n_players = 4,
+        .n_planets = 5,
+        .map_size_x = 100,
+        .map_size_y = 100,
+        .max_turns = 200,
+        .ship_damage = 64,
+        .turns_to_dock = 5,
+        .max_velocity = 7.0,
+    };
+
+    var map = try halite2.Map.init(config, allocator);
     defer map.deinit();
 
     try map.add_player("Test player 1");
@@ -15,7 +24,7 @@ pub fn main() !void {
 
     // Game loop
     var turn: u32 = 0;
-    while (turn < MAX_TURNS) : (turn += 1) {
+    while (turn < config.max_turns) : (turn += 1) {
         // 1. Validate and gather commands for each player
         var all_validated_commands = try allocator.alloc(std.AutoHashMap(IdLib.Id, halite2.ShipCommand), map.players.len);
         defer {
@@ -29,7 +38,7 @@ pub fn main() !void {
             var raw_commands = std.AutoHashMap(IdLib.Id, halite2.ShipCommand).init(allocator);
             defer raw_commands.deinit();
 
-            all_validated_commands[i] = try player.validate_and_gather_commands(raw_commands, map.planets, allocator);
+            all_validated_commands[i] = try player.validate_and_gather_commands(raw_commands, map.planets, allocator, config);
         }
 
         // 2. Generate spatial map for this turn's combat and collisions
@@ -46,7 +55,7 @@ pub fn main() !void {
         }
 
         for (map.players) |*player| {
-            player.process_combat(spatial_map, map.size);
+            player.process_combat(spatial_map, map.size, config);
         }
 
         for (map.players) |*player| {
