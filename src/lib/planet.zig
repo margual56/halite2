@@ -4,7 +4,7 @@ pub const Planet = struct {
     id: Id,
     size: f64,
     halite: f64,
-    position: @Vector(2, f64),
+    position: @Vector(2, f32),
     docked_count: u32 = 0,
 
     pub fn docking_spots(self: Planet) u32 {
@@ -45,14 +45,14 @@ pub const Planet = struct {
             .id = id,
             .size = size,
             .halite = size * (0.8 + (random.float(f64) * 0.4)),
-            .position = @as(@Vector(2, f64), @floatCast(candidate_position)),
+            .position = candidate_position,
         };
     }
 };
 
 fn is_valid_planet_position(position: @Vector(2, f32), size: f64, other_planets: []Planet) bool {
     for (other_planets) |planet| {
-        const d2 = distSq(@as(@Vector(2, f64), @floatCast(position)), planet.position);
+        const d2 = distSq(position, planet.position);
         const min_dist = planet.size + size + SHIP_RADIUS;
         if (d2 < min_dist * min_dist) {
             return false;

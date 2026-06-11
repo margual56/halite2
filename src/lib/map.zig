@@ -49,8 +49,10 @@ pub const Map = struct {
         };
 
         while (!is_valid_spawn_point(candidate, self.planets)) {
-            candidate[0] = random.float(f32) * @as(f32, @floatFromInt(self.size[0]));
-            candidate[1] = random.float(f32) * @as(f32, @floatFromInt(self.size[1]));
+            candidate[0] =
+                @as(f32, @floatFromInt(self.size[0])) * 0.5 + (@as(f32, @floatFromInt(self.size[0])) * 0.4) * @cos((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + random.float(f32));
+            candidate[1] =
+                @as(f32, @floatFromInt(self.size[1])) * 0.5 + (@as(f32, @floatFromInt(self.size[1])) * 0.4) * @sin((2 * std.math.pi * @as(f32, @floatFromInt(i))) / @as(f32, @floatFromInt(self.players.len)) + random.float(f32));
         }
 
         return candidate;
@@ -123,8 +125,8 @@ pub const Map = struct {
 fn is_valid_spawn_point(position: @Vector(2, f32), planets: PlanetList) bool {
     var it = planets.valueIterator();
     while (it.next()) |planet| {
-        const d2 = distSq(@as(@Vector(2, f64), @floatCast(position)), planet.position);
-        const min_dist = planet.size + SHIP_RADIUS * 2;
+        const d2 = distSq(position, planet.position);
+        const min_dist = planet.size + SHIP_RADIUS * 5 + 15.0; // enough room for the 3-ship triangle
         if (d2 < min_dist * min_dist) {
             return false;
         }

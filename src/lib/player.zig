@@ -122,7 +122,7 @@ pub const Player = struct {
             // Apply new state from validated commands
             switch (ship.new_state) {
                 .DOCKING => |d| {
-                    if (ship.state != .DOCKING) {
+                    if (ship.state == .UNDOCKED) {
                         if (planets.contains(d.id)) {
                             ship.state = ship.new_state;
                         }
