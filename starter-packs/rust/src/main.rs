@@ -2,7 +2,7 @@ mod hlt;
 use hlt::{dock, thrust};
 
 fn main() {
-    let mut game = hlt::Game::new("MyRustBot");
+    let mut game = hlt::Game::new("StarterPackBot");
 
     loop {
         let map = game.update_map();
@@ -10,12 +10,18 @@ fn main() {
 
         if let Some(me) = map.me() {
             for ship in me.ships.values() {
-                if !ship.is_undocked() { continue; }
+                if !ship.is_undocked() {
+                    continue;
+                }
 
-                let nearest = map.planets.values()
+                let nearest = map
+                    .planets
+                    .values()
                     .filter(|p| !p.is_full())
                     .min_by(|a, b| {
-                        ship.distance_to(a).partial_cmp(&ship.distance_to(b)).unwrap()
+                        ship.distance_to(a)
+                            .partial_cmp(&ship.distance_to(b))
+                            .unwrap()
                     });
 
                 if let Some(planet) = nearest {

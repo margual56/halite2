@@ -7,7 +7,7 @@ pub fn main(init: std.process.Init) !void {
     defer _ = arena.deinit();
     const allocator = arena.allocator();
 
-    var game = try hlt.Game.init(io, "MyZigBot", allocator);
+    var game = try hlt.Game.init(io, "StarterPackBot", allocator);
     defer game.map.deinit();
 
     var cmd_bufs: [256][32]u8 = undefined;

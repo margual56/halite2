@@ -1,6 +1,6 @@
-from hlt import Game, thrust, dock, undock
+from hlt import Game, dock, thrust, undock
 
-game = Game("MyBot")
+game = Game("StarterPackBot")
 
 while True:
     game_map = game.update_map()

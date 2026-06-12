@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-	game := hlt.NewGame("MyGoBot")
+	game := hlt.NewGame("StarterPackBot")
 
 	for {
 		gameMap := game.UpdateMap()
