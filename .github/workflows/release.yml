@@ -1,0 +1,107 @@
+name: Release
+
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    release:
+        runs-on: ubuntu-slim
+        permissions:
+            contents: write
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Determine Version Bump
+              id: bump
+              run: |
+                  MSG=$(git log -1 --pretty=%B)
+                  if [[ "$MSG" == feat:* ]]; then
+                    echo "type=minor" >> $GITHUB_OUTPUT
+                  elif [[ "$MSG" == fix:* ]]; then
+                    echo "type=patch" >> $GITHUB_OUTPUT
+                  elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+                    echo "type=patch" >> $GITHUB_OUTPUT
+                  else
+                    echo "type=none" >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Get Current Version
+              if: steps.bump.outputs.type != 'none'
+              id: current_version
+              run: |
+                  LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+                  echo "version=${LATEST#v}" >> $GITHUB_OUTPUT
+
+            - name: Calculate Next Version
+              if: steps.bump.outputs.type != 'none'
+              id: next_version
+              run: |
+                  VERSION=${{ steps.current_version.outputs.version }}
+                  IFS='.' read -r major minor patch <<< "$VERSION"
+                  if [ "${{ steps.bump.outputs.type }}" == "minor" ]; then
+                    minor=$((minor + 1))
+                    patch=0
+                  else
+                    patch=$((patch + 1))
+                  fi
+                  NEXT="$major.$minor.$patch"
+                  echo "version=$NEXT" >> $GITHUB_OUTPUT
+                  echo "tag=v$NEXT" >> $GITHUB_OUTPUT
+
+            - name: Install Zig
+              if: steps.bump.outputs.type != 'none'
+              run: |
+                  wget https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+                  tar xf zig-x86_64-linux-0.16.0.tar.xz
+                  echo "$(pwd)/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+
+            - name: Install System Dependencies
+              if: steps.bump.outputs.type != 'none'
+              run: |
+                  sudo apt-get install -y pkg-config
+
+            - name: Build x86_64
+              if: steps.bump.outputs.type != 'none'
+              run: |
+                  # Force pkg-config to output the absolute -L library paths
+                  export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
+
+                  # It's safest to just use native for the host architecture
+                  zig build -Dtarget=native -Doptimize=ReleaseSafe
+                  mv zig-out/bin/halite2 halite2-x86_64
+
+            - name: Build ARM64
+              if: steps.bump.outputs.type != 'none'
+              run: |
+                  # Point pkg-config to the ARM64 libraries
+                  export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+                  # Force pkg-config to output the absolute -L library paths
+                  export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
+
+                  zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSafe
+                  mv zig-out/bin/halite2 halite2-aarch64
+
+            - name: Create Release
+              if: steps.bump.outputs.type != 'none'
+              uses: softprops/action-gh-release@v2
+              with:
+                  tag_name: ${{ steps.next_version.outputs.tag }}
+                  name: ${{ steps.next_version.outputs.tag }}
+                  body: |
+                      Automated release for ${{ steps.next_version.outputs.tag }}
+                      - Architecture: x86_64, aarch64
+                  files: |
+                      halite2-x86_64
+                      halite2-aarch64
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
