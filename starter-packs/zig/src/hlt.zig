@@ -58,13 +58,16 @@ pub const Player = struct {
 pub const GameMap = struct {
     width: u32,
     height: u32,
-    my_player_index: u32,
-    players: []Player, // ordered; me is players[my_player_index]
+    my_id: u32,
+    players: []Player,
     planets: std.AutoHashMap(u32, Planet),
     allocator: std.mem.Allocator,
 
-    pub fn me(self: *GameMap) *Player {
-        return &self.players[self.my_player_index];
+    pub fn me(self: *GameMap) ?*Player {
+        for (self.players) |*p| {
+            if (p.id == self.my_id) return p;
+        }
+        return null;
     }
 
     pub fn deinit(self: *GameMap) void {
@@ -78,26 +81,24 @@ pub const Game = struct {
     io: std.Io,
     stdin: std.Io.File,
     stdout: std.Io.File,
-    n_players: u32,
-    n_planets: u32,
+    my_id: u32,
     map: GameMap,
-    in_buf: [4096]u8 = undefined,
-    out_buf: [4096]u8 = undefined,
+    // 32 KB — enough for a state line with ~200 ships and 5 planets
+    in_buf: [32768]u8 = undefined,
+    out_buf: [512]u8 = undefined,
 
     pub fn init(io: std.Io, name: []const u8, allocator: std.mem.Allocator) !Game {
         var stdin = std.Io.File.stdin();
         var stdout = std.Io.File.stdout();
-        var in_buf: [4096]u8 = undefined;
-        var out_buf: [4096]u8 = undefined;
+        var in_buf: [32768]u8 = undefined;
+        var out_buf: [512]u8 = undefined;
         var r = stdin.readerStreaming(io, &in_buf);
         var w = stdout.writerStreaming(io, &out_buf);
 
-        // Line 1: n_players my_index
+        // Line 1: my_player_id
         const l1 = try r.interface.takeDelimiterExclusive('\n');
         r.interface.toss(1);
-        var it1 = std.mem.tokenizeScalar(u8, l1, ' ');
-        const n_players = try std.fmt.parseInt(u32, it1.next().?, 10);
-        const my_index = try std.fmt.parseInt(u32, it1.next().?, 10);
+        const my_id = try std.fmt.parseInt(u32, std.mem.trimEnd(u8, l1, "\r"), 10);
 
         // Line 2: width height
         const l2 = try r.interface.takeDelimiterExclusive('\n');
@@ -106,30 +107,12 @@ pub const Game = struct {
         const width = try std.fmt.parseInt(u32, it2.next().?, 10);
         const height = try std.fmt.parseInt(u32, it2.next().?, 10);
 
-        // Line 3: n_planets
+        // Line 3: full game state
         const l3 = try r.interface.takeDelimiterExclusive('\n');
         r.interface.toss(1);
-        const n_planets = try std.fmt.parseInt(u32, std.mem.trimEnd(u8, l3, "\r"), 10);
+        const state = try parseState(l3, allocator);
 
-        var planets = std.AutoHashMap(u32, Planet).init(allocator);
-        for (0..n_planets) |_| {
-            const lp = try r.interface.takeDelimiterExclusive('\n');
-            r.interface.toss(1);
-            var itp = std.mem.tokenizeAny(u8, lp, " \r");
-            const pid = try std.fmt.parseInt(u32, itp.next().?, 10);
-            const px = try std.fmt.parseFloat(f64, itp.next().?);
-            const py = try std.fmt.parseFloat(f64, itp.next().?);
-            const psize = try std.fmt.parseFloat(f64, itp.next().?);
-            _ = itp.next(); // reserved "3"
-            _ = itp.next(); // reserved "0"
-            const phal = try std.fmt.parseFloat(f64, itp.next().?);
-            try planets.put(pid, .{ .id = pid, .x = px, .y = py, .size = psize, .halite = phal });
-        }
-
-        const players = try allocator.alloc(Player, n_players);
-        for (players, 0..) |*p, i| p.* = .{ .id = @intCast(i), .ships = std.AutoHashMap(u32, Ship).init(allocator) };
-
-        // Send name
+        // Send bot name
         try w.interface.print("{s}\n", .{name});
         try w.flush();
 
@@ -137,9 +120,15 @@ pub const Game = struct {
             .io = io,
             .stdin = stdin,
             .stdout = stdout,
-            .n_players = n_players,
-            .n_planets = n_planets,
-            .map = .{ .width = width, .height = height, .my_player_index = my_index, .players = players, .planets = planets, .allocator = allocator },
+            .my_id = my_id,
+            .map = .{
+                .width = width,
+                .height = height,
+                .my_id = my_id,
+                .players = state.players,
+                .planets = state.planets,
+                .allocator = allocator,
+            },
             .in_buf = in_buf,
             .out_buf = out_buf,
         };
@@ -147,60 +136,17 @@ pub const Game = struct {
 
     pub fn update_map(self: *Game) !*GameMap {
         var r = self.stdin.readerStreaming(self.io, &self.in_buf);
-
-        const lturn = try r.interface.takeDelimiterExclusive('\n');
+        const line = try r.interface.takeDelimiterExclusive('\n');
         r.interface.toss(1);
-        _ = lturn; // turn number available if needed
 
-        for (self.map.players) |*player| {
-            const lhdr = try r.interface.takeDelimiterExclusive('\n');
-            r.interface.toss(1);
-            var ith = std.mem.tokenizeAny(u8, lhdr, " \r");
-            player.id = try std.fmt.parseInt(u32, ith.next().?, 10);
-            const n_ships = try std.fmt.parseInt(u32, ith.next().?, 10);
+        // Replace map contents with fresh parse
+        for (self.map.players) |*p| p.ships.deinit();
+        self.map.allocator.free(self.map.players);
+        self.map.planets.deinit();
 
-            player.ships.clearRetainingCapacity();
-            for (0..n_ships) |_| {
-                const ls = try r.interface.takeDelimiterExclusive('\n');
-                r.interface.toss(1);
-                var its = std.mem.tokenizeAny(u8, ls, " \r");
-                const sid = try std.fmt.parseInt(u32, its.next().?, 10);
-                const sx = try std.fmt.parseFloat(f64, its.next().?);
-                const sy = try std.fmt.parseFloat(f64, its.next().?);
-                const shp = try std.fmt.parseInt(u8, its.next().?, 10);
-                const sst = try std.fmt.parseInt(u8, its.next().?, 10);
-                const spid = try std.fmt.parseInt(u32, its.next().?, 10);
-                const sprg = try std.fmt.parseInt(u8, its.next().?, 10);
-                try player.ships.put(sid, .{
-                    .id = sid,
-                    .owner_id = player.id,
-                    .x = sx,
-                    .y = sy,
-                    .health = shp,
-                    .status = @enumFromInt(sst),
-                    .planet_id = spid,
-                    .docking_progress = sprg,
-                });
-            }
-        }
-
-        const pit = self.map.planets.valueIterator();
-        _ = pit; // silence unused warning — we re-read below by planet count
-        for (0..self.n_planets) |_| {
-            const lp = try r.interface.takeDelimiterExclusive('\n');
-            r.interface.toss(1);
-            var itp = std.mem.tokenizeAny(u8, lp, " \r");
-            const pid = try std.fmt.parseInt(u32, itp.next().?, 10);
-            const owner = try std.fmt.parseInt(u32, itp.next().?, 10);
-            const docked = try std.fmt.parseInt(u32, itp.next().?, 10);
-            _ = itp.next(); // production
-            const hal = try std.fmt.parseFloat(f64, itp.next().?);
-            if (self.map.planets.getPtr(pid)) |p| {
-                p.owner_id = owner;
-                p.docked_count = docked;
-                p.halite = hal;
-            }
-        }
+        const state = try parseState(line, self.map.allocator);
+        self.map.players = state.players;
+        self.map.planets = state.planets;
 
         return &self.map;
     }
@@ -216,8 +162,80 @@ pub const Game = struct {
     }
 };
 
-pub fn cmd_thrust(buf: []u8, ship_id: u32, angle: u16, mag: u8) []u8 {
-    return std.fmt.bufPrint(buf, "t {d} {d} {d}", .{ ship_id, angle % 360, @min(MAX_SPEED, mag) }) catch unreachable;
+const ParseState = struct {
+    players: []Player,
+    planets: std.AutoHashMap(u32, Planet),
+};
+
+fn parseState(line: []const u8, allocator: std.mem.Allocator) !ParseState {
+    var it = std.mem.tokenizeAny(u8, line, " \r");
+
+    const n_players = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+    const players = try allocator.alloc(Player, n_players);
+    errdefer allocator.free(players);
+
+    for (players) |*player| {
+        const pid = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+        const n_ships = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+        player.* = .{ .id = pid, .ships = std.AutoHashMap(u32, Ship).init(allocator) };
+
+        for (0..n_ships) |_| {
+            const sid = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+            const x = try std.fmt.parseFloat(f64, it.next() orelse return error.BadState);
+            const y = try std.fmt.parseFloat(f64, it.next() orelse return error.BadState);
+            const hp = try std.fmt.parseInt(u8, it.next() orelse return error.BadState, 10);
+            _ = it.next(); // vel_x
+            _ = it.next(); // vel_y
+            const docked = try std.fmt.parseInt(u8, it.next() orelse return error.BadState, 10);
+            const planet_id = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+            const progress = try std.fmt.parseInt(u8, it.next() orelse return error.BadState, 10);
+            _ = it.next(); // weapon cooldown
+            try player.ships.put(sid, .{
+                .id = sid,
+                .owner_id = pid,
+                .x = x,
+                .y = y,
+                .health = hp,
+                .status = @enumFromInt(docked),
+                .planet_id = planet_id,
+                .docking_progress = progress,
+            });
+        }
+    }
+
+    const n_planets = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+    var planets = std.AutoHashMap(u32, Planet).init(allocator);
+    errdefer planets.deinit();
+
+    for (0..n_planets) |_| {
+        const pid = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+        const x = try std.fmt.parseFloat(f64, it.next() orelse return error.BadState);
+        const y = try std.fmt.parseFloat(f64, it.next() orelse return error.BadState);
+        _ = it.next(); // planet hp (255)
+        const size = try std.fmt.parseFloat(f64, it.next() orelse return error.BadState);
+        _ = it.next(); // docking spots
+        _ = it.next(); // current production
+        const halite = try std.fmt.parseFloat(f64, it.next() orelse return error.BadState);
+        const owned = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+        const owner_id = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+        const n_docked = try std.fmt.parseInt(u32, it.next() orelse return error.BadState, 10);
+        for (0..n_docked) |_| _ = it.next(); // docked ship ids
+        try planets.put(pid, .{
+            .id = pid,
+            .x = x,
+            .y = y,
+            .size = size,
+            .halite = halite,
+            .owner_id = if (owned != 0) owner_id else 0,
+            .docked_count = n_docked,
+        });
+    }
+
+    return .{ .players = players, .planets = planets };
+}
+
+pub fn cmd_thrust(buf: []u8, ship_id: u32, mag: u8, angle: u16) []u8 {
+    return std.fmt.bufPrint(buf, "t {d} {d} {d}", .{ ship_id, @min(MAX_SPEED, mag), angle % 360 }) catch unreachable;
 }
 
 pub fn cmd_dock(buf: []u8, ship_id: u32, planet_id: u32) []u8 {

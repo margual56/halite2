@@ -25,12 +25,12 @@ const (
 )
 
 type Ship struct {
-	ID, OwnerID        uint32
-	X, Y               float64
-	Health             uint32
-	Status             DockStatus
-	PlanetID           uint32
-	DockingProgress    uint32
+	ID, OwnerID     uint32
+	X, Y            float64
+	Health          uint32
+	Status          DockStatus
+	PlanetID        uint32
+	DockingProgress uint32
 }
 
 func (s Ship) IsUndocked() bool { return s.Status == Undocked }
@@ -49,9 +49,9 @@ func (s Ship) CanDock(p Planet) bool {
 }
 
 type Planet struct {
-	ID                     uint32
-	X, Y, Size, Halite     float64
-	OwnerID, DockedCount   uint32
+	ID                   uint32
+	X, Y, Size, Halite   float64
+	OwnerID, DockedCount uint32
 }
 
 func (p Planet) DockingSpots() uint32 { return uint32(math.Floor(p.Size)) }
@@ -63,19 +63,25 @@ type Player struct {
 }
 
 type GameMap struct {
-	Width, Height   uint32
-	Players         []Player           // ordered; me is Players[MyPlayerIndex]
-	Planets         map[uint32]Planet
-	MyPlayerIndex   int
+	Width, Height uint32
+	Players       []Player
+	Planets       map[uint32]Planet
+	MyID          uint32
 }
 
-func (m *GameMap) Me() *Player { return &m.Players[m.MyPlayerIndex] }
+func (m *GameMap) Me() *Player {
+	for i := range m.Players {
+		if m.Players[i].ID == m.MyID {
+			return &m.Players[i]
+		}
+	}
+	return nil
+}
 
 type Game struct {
-	Map      GameMap
-	nPlanets int
-	reader   *bufio.Reader
-	stdout   *bufio.Writer
+	Map    GameMap
+	reader *bufio.Reader
+	stdout *bufio.Writer
 }
 
 func NewGame(name string) *Game {
@@ -87,45 +93,23 @@ func NewGame(name string) *Game {
 		return strings.TrimRight(line, "\r\n")
 	}
 
-	parseUint := func(s string) uint32 {
-		v, _ := strconv.ParseUint(strings.TrimSpace(s), 10, 32)
-		return uint32(v)
-	}
-	parseFloat := func(s string) float64 {
-		v, _ := strconv.ParseFloat(strings.TrimSpace(s), 64)
-		return v
-	}
-
-	parts := strings.Fields(readLine())
-	nPlayers, _ := strconv.Atoi(parts[0])
-	myIndex, _  := strconv.Atoi(parts[1])
+	myID, _ := strconv.ParseUint(strings.TrimSpace(readLine()), 10, 32)
 
 	wh := strings.Fields(readLine())
-	width  := parseUint(wh[0])
-	height := parseUint(wh[1])
+	width, _  := strconv.ParseUint(wh[0], 10, 32)
+	height, _ := strconv.ParseUint(wh[1], 10, 32)
 
-	nPlanets, _ := strconv.Atoi(strings.TrimSpace(readLine()))
-	planets := make(map[uint32]Planet, nPlanets)
-	for i := 0; i < nPlanets; i++ {
-		pp := strings.Fields(readLine())
-		pid  := parseUint(pp[0])
-		planets[pid] = Planet{
-			ID: pid, X: parseFloat(pp[1]), Y: parseFloat(pp[2]),
-			Size: parseFloat(pp[3]), Halite: parseFloat(pp[6]),
-		}
-	}
-
-	players := make([]Player, nPlayers)
-	for i := range players {
-		players[i] = Player{ID: uint32(i), Ships: make(map[uint32]Ship)}
-	}
+	players, planets := parseState(readLine())
 
 	fmt.Fprintln(w, name)
 	w.Flush()
 
 	return &Game{
-		Map: GameMap{Width: width, Height: height, Players: players, Planets: planets, MyPlayerIndex: myIndex},
-		nPlanets: nPlanets,
+		Map: GameMap{
+			Width: uint32(width), Height: uint32(height),
+			Players: players, Planets: planets,
+			MyID: uint32(myID),
+		},
 		reader: r, stdout: w,
 	}
 }
@@ -135,48 +119,7 @@ func (g *Game) UpdateMap() *GameMap {
 		line, _ := g.reader.ReadString('\n')
 		return strings.TrimRight(line, "\r\n")
 	}
-	parseUint := func(s string) uint32 {
-		v, _ := strconv.ParseUint(strings.TrimSpace(s), 10, 32)
-		return uint32(v)
-	}
-	parseFloat := func(s string) float64 {
-		v, _ := strconv.ParseFloat(strings.TrimSpace(s), 64)
-		return v
-	}
-
-	readLine() // turn number
-
-	for i := range g.Map.Players {
-		hdr := strings.Fields(readLine())
-		g.Map.Players[i].ID = parseUint(hdr[0])
-		nShips, _ := strconv.Atoi(hdr[1])
-
-		g.Map.Players[i].Ships = make(map[uint32]Ship, nShips)
-		for j := 0; j < nShips; j++ {
-			s := strings.Fields(readLine())
-			sid := parseUint(s[0])
-			st, _ := strconv.Atoi(s[4])
-			g.Map.Players[i].Ships[sid] = Ship{
-				ID: sid, OwnerID: g.Map.Players[i].ID,
-				X: parseFloat(s[1]), Y: parseFloat(s[2]),
-				Health: parseUint(s[3]),
-				Status: DockStatus(st), PlanetID: parseUint(s[5]),
-				DockingProgress: parseUint(s[6]),
-			}
-		}
-	}
-
-	for i := 0; i < g.nPlanets; i++ {
-		pp := strings.Fields(readLine())
-		pid := parseUint(pp[0])
-		if p, ok := g.Map.Planets[pid]; ok {
-			p.OwnerID     = parseUint(pp[1])
-			p.DockedCount = parseUint(pp[2])
-			p.Halite      = parseFloat(pp[4])
-			g.Map.Planets[pid] = p
-		}
-	}
-
+	g.Map.Players, g.Map.Planets = parseState(readLine())
 	return &g.Map
 }
 
@@ -185,9 +128,81 @@ func (g *Game) SendCommands(cmds []string) {
 	g.stdout.Flush()
 }
 
-func Thrust(shipID uint32, angle, magnitude int) string {
-	if magnitude > MaxSpeed { magnitude = MaxSpeed }
-	return fmt.Sprintf("t %d %d %d", shipID, angle%360, magnitude)
+func parseState(line string) ([]Player, map[uint32]Planet) {
+	tokens := strings.Fields(line)
+	pos := 0
+
+	takeUint := func() uint32 {
+		v, _ := strconv.ParseUint(tokens[pos], 10, 32)
+		pos++
+		return uint32(v)
+	}
+	takeFloat := func() float64 {
+		v, _ := strconv.ParseFloat(tokens[pos], 64)
+		pos++
+		return v
+	}
+	skip := func() { pos++ }
+
+	nPlayers := int(takeUint())
+	players := make([]Player, nPlayers)
+	for i := 0; i < nPlayers; i++ {
+		pid    := takeUint()
+		nShips := int(takeUint())
+		ships  := make(map[uint32]Ship, nShips)
+		for j := 0; j < nShips; j++ {
+			sid      := takeUint()
+			x, y     := takeFloat(), takeFloat()
+			hp       := takeUint()
+			skip(); skip()      // vel_x, vel_y
+			docked   := takeUint()
+			planetID := takeUint()
+			progress := takeUint()
+			skip()              // weapon cooldown
+			ships[sid] = Ship{
+				ID: sid, OwnerID: pid,
+				X: x, Y: y, Health: hp,
+				Status: DockStatus(docked), PlanetID: planetID,
+				DockingProgress: progress,
+			}
+		}
+		players[i] = Player{ID: pid, Ships: ships}
+	}
+
+	nPlanets := int(takeUint())
+	planets  := make(map[uint32]Planet, nPlanets)
+	for k := 0; k < nPlanets; k++ {
+		pid     := takeUint()
+		x, y    := takeFloat(), takeFloat()
+		skip()              // planet hp (255)
+		size    := takeFloat()
+		skip()              // docking spots
+		skip()              // current production
+		halite  := takeFloat()
+		owned   := takeUint()
+		ownerID := takeUint()
+		nDocked := int(takeUint())
+		for d := 0; d < nDocked; d++ {
+			skip()          // docked ship ids
+		}
+		oid := uint32(0)
+		if owned != 0 {
+			oid = ownerID
+		}
+		planets[pid] = Planet{
+			ID: pid, X: x, Y: y, Size: size, Halite: halite,
+			OwnerID: oid, DockedCount: uint32(nDocked),
+		}
+	}
+
+	return players, planets
+}
+
+func Thrust(shipID uint32, magnitude, angle int) string {
+	if magnitude > MaxSpeed {
+		magnitude = MaxSpeed
+	}
+	return fmt.Sprintf("t %d %d %d", shipID, magnitude, angle%360)
 }
 
 func Dock(shipID, planetID uint32) string { return fmt.Sprintf("d %d %d", shipID, planetID) }

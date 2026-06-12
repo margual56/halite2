@@ -58,18 +58,19 @@ pub struct Player {
 
 pub struct GameMap {
     pub width: u32, pub height: u32,
-    pub players: Vec<Player>,        // ordered; me is players[my_player_index]
+    pub players: Vec<Player>,
     pub planets: HashMap<u32, Planet>,
-    pub my_player_index: usize,
+    pub my_id: u32,
 }
 
 impl GameMap {
-    pub fn me(&self) -> &Player { &self.players[self.my_player_index] }
+    pub fn me(&self) -> Option<&Player> {
+        self.players.iter().find(|p| p.id == self.my_id)
+    }
 }
 
 pub struct Game {
     pub map: GameMap,
-    n_planets: usize,
     reader: io::BufReader<io::Stdin>,
     buf: String,
 }
@@ -86,9 +87,7 @@ impl Game {
         };
 
         let l1 = next_line(&mut reader, &mut buf);
-        let mut it1 = l1.split_whitespace();
-        let n_players: usize = it1.next().unwrap().parse().unwrap();
-        let my_index: usize  = it1.next().unwrap().parse().unwrap();
+        let my_id: u32 = l1.trim().parse().unwrap();
 
         let l2 = next_line(&mut reader, &mut buf);
         let mut it2 = l2.split_whitespace();
@@ -96,80 +95,25 @@ impl Game {
         let height: u32 = it2.next().unwrap().parse().unwrap();
 
         let l3 = next_line(&mut reader, &mut buf);
-        let n_planets: usize = l3.trim().parse().unwrap();
-
-        let mut planets = HashMap::new();
-        for _ in 0..n_planets {
-            let lp = next_line(&mut reader, &mut buf);
-            let mut itp = lp.split_whitespace();
-            let pid:  u32 = itp.next().unwrap().parse().unwrap();
-            let px:   f64 = itp.next().unwrap().parse().unwrap();
-            let py:   f64 = itp.next().unwrap().parse().unwrap();
-            let size: f64 = itp.next().unwrap().parse().unwrap();
-            let _:    &str = itp.next().unwrap(); // reserved "3"
-            let _:    &str = itp.next().unwrap(); // reserved "0"
-            let hal:  f64 = itp.next().unwrap().parse().unwrap();
-            planets.insert(pid, Planet { id: pid, x: px, y: py, size, halite: hal, owner_id: 0, docked_count: 0 });
-        }
-
-        let players = (0..n_players).map(|i| Player { id: i as u32, ships: HashMap::new() }).collect();
+        let (players, planets) = parse_state(&l3);
 
         print!("{}\n", name);
         io::stdout().flush().unwrap();
 
         Game {
-            map: GameMap { width, height, players, planets, my_player_index: my_index },
-            n_planets,
+            map: GameMap { width, height, players, planets, my_id },
             reader,
             buf,
         }
     }
 
     pub fn update_map(&mut self) -> &GameMap {
-        let mut next = |r: &mut io::BufReader<io::Stdin>, b: &mut String| -> String {
-            b.clear(); r.read_line(b).unwrap(); b.trim_end().to_owned()
-        };
-
-        next(&mut self.reader, &mut self.buf); // turn number
-
-        for player in &mut self.map.players {
-            let lhdr = next(&mut self.reader, &mut self.buf);
-            let mut ith = lhdr.split_whitespace();
-            player.id = ith.next().unwrap().parse().unwrap();
-            let n_ships: usize = ith.next().unwrap().parse().unwrap();
-
-            player.ships.clear();
-            for _ in 0..n_ships {
-                let ls = next(&mut self.reader, &mut self.buf);
-                let mut its = ls.split_whitespace();
-                let sid:  u32 = its.next().unwrap().parse().unwrap();
-                let sx:   f64 = its.next().unwrap().parse().unwrap();
-                let sy:   f64 = its.next().unwrap().parse().unwrap();
-                let shp:  u32 = its.next().unwrap().parse().unwrap();
-                let sst:  u32 = its.next().unwrap().parse().unwrap();
-                let spid: u32 = its.next().unwrap().parse().unwrap();
-                let sprg: u32 = its.next().unwrap().parse().unwrap();
-                player.ships.insert(sid, Ship {
-                    id: sid, owner_id: player.id,
-                    x: sx, y: sy, health: shp,
-                    status: sst.into(), planet_id: spid, docking_progress: sprg,
-                });
-            }
-        }
-
-        for _ in 0..self.n_planets {
-            let lp = next(&mut self.reader, &mut self.buf);
-            let mut itp = lp.split_whitespace();
-            let pid:    u32 = itp.next().unwrap().parse().unwrap();
-            let owner:  u32 = itp.next().unwrap().parse().unwrap();
-            let docked: u32 = itp.next().unwrap().parse().unwrap();
-            let _: &str = itp.next().unwrap(); // production
-            let hal: f64 = itp.next().unwrap().parse().unwrap();
-            if let Some(p) = self.map.planets.get_mut(&pid) {
-                p.owner_id = owner; p.docked_count = docked; p.halite = hal;
-            }
-        }
-
+        self.buf.clear();
+        self.reader.read_line(&mut self.buf).unwrap();
+        let line = self.buf.trim_end().to_owned();
+        let (players, planets) = parse_state(&line);
+        self.map.players = players;
+        self.map.planets = planets;
         &self.map
     }
 
@@ -179,8 +123,74 @@ impl Game {
     }
 }
 
-pub fn thrust(ship_id: u32, angle: u32, magnitude: u32) -> String {
-    format!("t {} {} {}", ship_id, angle % 360, magnitude.min(MAX_SPEED))
+fn parse_state(line: &str) -> (Vec<Player>, HashMap<u32, Planet>) {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let mut pos = 0;
+
+    macro_rules! take_u32 {
+        () => {{ let v: u32 = tokens[pos].parse().unwrap(); pos += 1; v }};
+    }
+    macro_rules! take_f64 {
+        () => {{ let v: f64 = tokens[pos].parse().unwrap(); pos += 1; v }};
+    }
+    macro_rules! skip {
+        () => {{ pos += 1; }};
+    }
+
+    let n_players = take_u32!() as usize;
+    let mut players = Vec::with_capacity(n_players);
+    for _ in 0..n_players {
+        let pid     = take_u32!();
+        let n_ships = take_u32!() as usize;
+        let mut ships = HashMap::new();
+        for _ in 0..n_ships {
+            let sid      = take_u32!();
+            let x        = take_f64!();
+            let y        = take_f64!();
+            let hp       = take_u32!();
+            skip!(); skip!();           // vel_x, vel_y
+            let docked   = take_u32!();
+            let planet_id = take_u32!();
+            let progress  = take_u32!();
+            skip!();                    // weapon cooldown
+            ships.insert(sid, Ship {
+                id: sid, owner_id: pid,
+                x, y, health: hp,
+                status: docked.into(), planet_id, docking_progress: progress,
+            });
+        }
+        players.push(Player { id: pid, ships });
+    }
+
+    let n_planets = take_u32!() as usize;
+    let mut planets = HashMap::new();
+    for _ in 0..n_planets {
+        let pid      = take_u32!();
+        let x        = take_f64!();
+        let y        = take_f64!();
+        skip!();                        // planet hp (255)
+        let size     = take_f64!();
+        skip!();                        // docking spots
+        skip!();                        // current production
+        let halite   = take_f64!();
+        let owned    = take_u32!();
+        let owner_id = take_u32!();
+        let n_docked = take_u32!();
+        for _ in 0..n_docked {
+            skip!();                    // docked ship ids
+        }
+        planets.insert(pid, Planet {
+            id: pid, x, y, size, halite,
+            owner_id: if owned != 0 { owner_id } else { 0 },
+            docked_count: n_docked,
+        });
+    }
+
+    (players, planets)
+}
+
+pub fn thrust(ship_id: u32, magnitude: u32, angle: u32) -> String {
+    format!("t {} {} {}", ship_id, magnitude.min(MAX_SPEED), angle % 360)
 }
 
 pub fn dock(ship_id: u32, planet_id: u32) -> String {

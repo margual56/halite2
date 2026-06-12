@@ -4,61 +4,81 @@ from .entities import Ship, Planet, Player, GameMap
 
 class Game:
     def __init__(self, name: str):
-        parts = input().split()
-        n_players, my_index = int(parts[0]), int(parts[1])
+        my_id = int(input())
 
         wh = input().split()
         width, height = int(wh[0]), int(wh[1])
 
-        n_planets = int(input())
-        planets: dict = {}
-        for _ in range(n_planets):
-            p = input().split()
-            pid = int(p[0])
-            planets[pid] = Planet(
-                id=pid, x=float(p[1]), y=float(p[2]),
-                size=float(p[3]), halite=float(p[6]),
-            )
+        players, planets = _parse_state(input())
 
-        self._n_players = n_players
-        self._n_planets = n_planets
+        self._my_id = my_id
         self._map = GameMap(
             width=width, height=height,
-            players=[Player(id=i) for i in range(n_players)],
+            players=players,
             planets=planets,
-            my_player_index=my_index,
+            my_id=my_id,
         )
 
         print(name, flush=True)
 
-    def update_map(self) -> GameMap:
-        _turn = input()  # turn number, unused here
-
-        for slot in range(self._n_players):
-            hdr = input().split()
-            player_id, n_ships = int(hdr[0]), int(hdr[1])
-            ships: dict = {}
-            for _ in range(n_ships):
-                s = input().split()
-                sid = int(s[0])
-                ships[sid] = Ship(
-                    id=sid, owner_id=player_id,
-                    x=float(s[1]), y=float(s[2]),
-                    health=int(s[3]),
-                    docked_status=int(s[4]),
-                    planet_id=int(s[5]),
-                    docking_progress=int(s[6]),
-                )
-            self._map.players[slot] = Player(id=player_id, ships=ships)
-
-        for _ in range(self._n_planets):
-            pp = input().split()
-            pid = int(pp[0])
-            self._map.planets[pid].owner_id    = int(pp[1])
-            self._map.planets[pid].docked_count = int(pp[2])
-            self._map.planets[pid].halite       = float(pp[4])
-
+    def update_map(self) -> 'GameMap':
+        players, planets = _parse_state(input())
+        self._map.players = players
+        self._map.planets = planets
         return self._map
 
     def send_commands(self, commands: list) -> None:
         print(' '.join(commands), flush=True)
+
+
+def _parse_state(line: str):
+    it = iter(line.split())
+
+    def take_int():   return int(next(it))
+    def take_float(): return float(next(it))
+    def skip():       next(it)
+
+    n_players = take_int()
+    players = []
+    for _ in range(n_players):
+        pid    = take_int()
+        n_ships = take_int()
+        ships  = {}
+        for _ in range(n_ships):
+            sid      = take_int()
+            x, y     = take_float(), take_float()
+            hp       = take_int()
+            skip(); skip()          # vel_x, vel_y
+            docked   = take_int()
+            planet_id = take_int()
+            progress  = take_int()
+            skip()                  # weapon cooldown
+            ships[sid] = Ship(
+                id=sid, owner_id=pid, x=x, y=y, health=hp,
+                docked_status=docked, planet_id=planet_id,
+                docking_progress=progress,
+            )
+        players.append(Player(id=pid, ships=ships))
+
+    n_planets = take_int()
+    planets   = {}
+    for _ in range(n_planets):
+        pid    = take_int()
+        x, y   = take_float(), take_float()
+        skip()                      # planet hp (255)
+        size   = take_float()
+        skip()                      # docking spots
+        skip()                      # current production
+        halite = take_float()
+        owned  = take_int()
+        owner_id = take_int()
+        n_docked = take_int()
+        for _ in range(n_docked):
+            skip()                  # docked ship ids
+        planets[pid] = Planet(
+            id=pid, x=x, y=y, size=size, halite=halite,
+            owner_id=owner_id if owned else 0,
+            docked_count=n_docked,
+        )
+
+    return players, planets

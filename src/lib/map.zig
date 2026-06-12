@@ -58,8 +58,7 @@ pub const Map = struct {
         return candidate;
     }
 
-    pub fn add_player(self: *Self, name_raw: []const u8, stdin: std.Io.File, stdout: std.Io.File) !void {
-        const id = self.uuid_generator.next();
+    pub fn add_player(self: *Self, id: IdLib.Id, name_raw: []const u8, stdin: std.Io.File, stdout: std.Io.File) !void {
 
         var name: [16]u8 = std.mem.zeroes([16]u8);
         const copy_len = @min(name_raw.len, 16);

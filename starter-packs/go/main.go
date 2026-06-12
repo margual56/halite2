@@ -12,7 +12,13 @@ func main() {
 		gameMap := game.UpdateMap()
 		var cmds []string
 
-		for _, ship := range gameMap.Me().Ships {
+		me := gameMap.Me()
+		if me == nil {
+			game.SendCommands(cmds)
+			continue
+		}
+
+		for _, ship := range me.Ships {
 			if !ship.IsUndocked() {
 				continue
 			}
@@ -38,7 +44,7 @@ func main() {
 				cmds = append(cmds, hlt.Dock(ship.ID, nearest.ID))
 			} else {
 				speed := int(math.Min(float64(hlt.MaxSpeed), minDist))
-				cmds = append(cmds, hlt.Thrust(ship.ID, ship.AngleTo(*nearest), speed))
+				cmds = append(cmds, hlt.Thrust(ship.ID, speed, ship.AngleTo(*nearest)))
 			}
 		}
 

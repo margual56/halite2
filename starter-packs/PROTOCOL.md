@@ -1,7 +1,7 @@
 # HLT2 Bot Communication Protocol
 
 Bots communicate with the engine over **stdin/stdout** using newline-terminated text.
-All numbers are base-10 ASCII. Floats use `:.2` formatting (two decimal places).
+All numbers are base-10 ASCII.
 
 ---
 
@@ -10,17 +10,14 @@ All numbers are base-10 ASCII. Floats use `:.2` formatting (two decimal places).
 ### Engine → Bot
 
 ```
-{n_players} {my_player_index}
+{my_player_id}
 {map_width} {map_height}
-{n_planets}
-{planet_id} {x} {y} {size} 3 0 {halite}    ← repeated n_planets times
+<state line>
 ```
 
-- `my_player_index` is **0-based**. In turn updates, the bot is at position
-  `my_player_index` in the ordered player list (players are always sent in the
-  same fixed order).
-- The `3 0` fields in planet lines are reserved constants (max_docking_turns,
-  owner placeholder); parse and discard.
+- `my_player_id` is the bot's own player ID for the whole game.
+- The third line is the initial game state (see **State line format** below).
+  At init time, player ship data may be incomplete — use it for planet positions only.
 
 ### Bot → Engine
 
@@ -37,11 +34,38 @@ A single line containing the bot's chosen display name.
 ### Engine → Bot
 
 ```
-{turn_number}
-{player_id} {n_ships}          ← repeated n_players times, always in the same order
-{ship_id} {x} {y} {health} {docked_status} {planet_id} {docking_progress} 0
-...                            ← n_ships ship lines follow each player header
-{planet_id} {owner_id} {docked_count} {production} {halite}   ← repeated n_planets times
+<state line>
+```
+
+One line containing the complete game state (see **State line format** below).
+
+### Bot → Engine
+
+All commands on **one line**, space-separated, terminated with `\n`.
+
+```
+t {ship_id} {magnitude} {angle}   THRUST: magnitude [0,7], angle [0,359]°
+d {ship_id} {planet_id}           DOCK
+u {ship_id}                       UNDOCK
+```
+
+An empty turn (no commands) must still send a blank line: `\n`
+
+---
+
+## 3. State line format
+
+All entities for one game state on a **single space-separated line**:
+
+```
+{n_players}
+  {player_id} {n_ships}
+    {ship_id} {x} {y} {hp} {vel_x} {vel_y} {docked_status} {planet_id} {docking_progress} {cooldown}
+    ...   ← n_ships ship records
+  ...     ← n_players player blocks
+{n_planets}
+  {planet_id} {x} {y} {hp} {radius} {docking_spots} {cur_prod} {halite} {owned} {owner_id} {n_docked} [{docked_ship_id} ...]
+  ...     ← n_planets planet records
 ```
 
 **Docked status values:**
@@ -53,56 +77,43 @@ A single line containing the bot's chosen display name.
 | 2     | DOCKED    |
 | 3     | UNDOCKING |
 
-- `planet_id` in ship lines is only meaningful when `docked_status != 0`.
-- Planet lines have **no count prefix** — always read exactly `n_planets` lines.
-- `production` is currently always `0` (not yet implemented).
-
-### Bot → Engine
-
-All commands on **one line**, space-separated, terminated with `\n`.
-
-```
-t {ship_id} {angle} {magnitude}   THRUST: angle [0,359]°, magnitude [0,7]
-d {ship_id} {planet_id}           DOCK
-u {ship_id}                       UNDOCK
-```
-
-Multiple commands are concatenated: `t 1 90 7 d 2 42 u 3\n`
-
-An empty turn (no commands) must still send a blank line: `\n`
+- `vel_x`, `vel_y` are always `0` (snapshot of position, not in-flight velocity).
+- `cooldown` is always `0`.
+- `hp` for planets is always `255`.
+- `cur_prod` is always `0` (not yet implemented).
+- `planet_id` in ship records is `0` when `docked_status == 0`.
+- `owner_id` is `0` and `owned` is `0` for unowned planets.
+- `n_docked` docked ship IDs immediately follow the planet record.
 
 ---
 
-## 3. Game over (once, at game end)
+## 4. Game over (once, at game end)
 
 ### Engine → Bot
 
 ```
 done
-{n_players}
-{player_id} {ship_count} {resources:.2} {rank}    ← repeated n_players times, sorted rank 1 first
+{my_player_id} {my_rank}
+{player_id} {ship_count} {resources:.2}    ← repeated for all players
 ```
 
-- `rank` is **1-based**. `1` = winner, `2` = second place, etc.
-- In the event of a draw, tied players share the same rank.
-- Bots may read this message or ignore it — the engine closes stdin immediately after.
+- `rank` is **1-based**. `1` = winner.
+- Bots may read this or ignore it — the engine closes stdin immediately after.
 
 ---
 
-## 4. Constants
+## 5. Constants
 
-| Name             | Value | Notes                        |
-|------------------|-------|------------------------------|
-| MAX_SPEED        | 7     | Max thrust magnitude         |
-| DOCK_RADIUS      | 4.0   | Distance to begin docking    |
-| SHIP_RADIUS      | 0.5   | Collision radius             |
-| SHIP_HEALTH      | 255   | Starting health              |
+| Name          | Value | Notes                     |
+|---------------|-------|---------------------------|
+| MAX_SPEED     | 7     | Max thrust magnitude      |
+| DOCK_RADIUS   | 4.0   | Distance to begin docking |
+| SHIP_RADIUS   | 0.5   | Collision radius          |
+| SHIP_HEALTH   | 255   | Starting / max health     |
 
 ---
 
-## 5. Keeping starter packs in sync
+## 6. Keeping starter packs in sync
 
 The engine implementation lives in `src/lib/bot_protocol.zig`.
 When the protocol changes, update this file **and** `bot_protocol.zig` together.
-Each starter pack contains a minimal `NullBot` that only sends blank command lines —
-run it against the engine to verify a pack still speaks the protocol correctly.

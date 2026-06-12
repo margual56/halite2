@@ -87,8 +87,9 @@ pub fn main(init: std.process.Init) !void {
         var stdout_reader = children[i].stdout.?.readerStreaming(io, &stdout_buf);
 
         // B. Send Engine State (Blind handshake)
-        // We use the loop index 'i' as the bot's player_id to satisfy the engine protocol
-        try comms.sendInit(&stdin_writer.interface, &map, @as(IdLib.Id, @intCast(i)));
+        // Player IDs start at 1 so that 0 remains a valid "empty slot" sentinel in the map.
+        const player_id: IdLib.Id = @intCast(i + 1);
+        try comms.sendInit(&stdin_writer.interface, &map, player_id);
         try stdin_writer.flush();
 
         // C. Read the bot's chosen name from stdout
@@ -99,8 +100,8 @@ pub fn main(init: std.process.Init) !void {
         stdout_reader.interface.toss(1);
         const bot_name = std.mem.trimEnd(u8, line, "\r");
 
-        // D. Add player
-        try map.add_player(bot_name, children[i].stdin.?, children[i].stdout.?);
+        // D. Add player with the same ID we told the bot
+        try map.add_player(player_id, bot_name, children[i].stdin.?, children[i].stdout.?);
         std.debug.print("Bot {d} successfully connected as: {s}\n", .{ i, bot_name });
     }
 

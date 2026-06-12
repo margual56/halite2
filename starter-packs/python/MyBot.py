@@ -20,7 +20,7 @@ while True:
         if ship.can_dock(nearest):
             commands.append(dock(ship.id, nearest.id))
         else:
-            commands.append(thrust(ship.id, ship.angle_to(nearest),
-                                   min(7, int(ship.distance_to(nearest)))))
+            mag = min(7, int(ship.distance_to(nearest)))
+            commands.append(thrust(ship.id, mag, ship.angle_to(nearest)))
 
     game.send_commands(commands)

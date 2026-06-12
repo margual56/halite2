@@ -60,10 +60,10 @@ class Player:
 class GameMap:
     width: int
     height: int
-    players: list          # ordered; position matches my_player_index
-    planets: dict          # planet_id -> Planet
-    my_player_index: int
+    players: list    # all players in parse order
+    planets: dict    # planet_id -> Planet
+    my_id: int       # this bot's player ID
 
     @property
     def me(self) -> Player:
-        return self.players[self.my_player_index]
+        return next((p for p in self.players if p.id == self.my_id), Player(id=self.my_id))
